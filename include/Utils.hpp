@@ -19,15 +19,11 @@
 #include <vector>
 #include <filesystem>
 #include <cstdio>
-#include <array>
-#include <algorithm>
 #include <sys/wait.h>
 #include <unistd.h>
 #include <syslog.h>
 #include <spawn.h>
 #include <fcntl.h>
-
-#include "SysfsNode.hpp"
 
 extern char **environ;
 
@@ -35,36 +31,18 @@ namespace ucc
 {
 
 // ---------------------------------------------------------------------------
-// Device support whitelist
+// Device support policy
 //
-// Only devices listed here have been tested with uccd.  The daemon will still
-// run on unlisted hardware (so clients can query the status) but it will NOT
-// touch any hardware registers or start worker threads.
+// UCC is allowed to start on any Linux system. Hardware-specific features still
+// rely on the usual driver/sysfs capability checks before doing useful work.
 // ---------------------------------------------------------------------------
 
-/// DMI product_sku strings of tested / supported laptops.
-inline constexpr std::array kSupportedDeviceSKUs = {
-  "STELLARIS16A07",
-  "STELLARIS16I07",
-  "XNE16E25",
-  "XNE16A25",
-};
-
 /**
- * @brief Check whether the current machine is a supported (whitelisted) device.
- *
- * Reads /sys/class/dmi/id/product_sku and compares it against the
- * built-in whitelist.  Returns true if the SKU matches.
+ * @brief Check whether UCC should start on the current machine.
  */
 inline bool isDeviceSupported()
 {
-  const auto sku = SysfsNode< std::string >( "/sys/class/dmi/id/product_sku" ).read();
-  if ( !sku.has_value() )
-    return false;
-
-  return std::find( kSupportedDeviceSKUs.begin(),
-                    kSupportedDeviceSKUs.end(),
-                    *sku ) != kSupportedDeviceSKUs.end();
+  return true;
 }
 
 /**

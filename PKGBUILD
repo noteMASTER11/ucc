@@ -49,9 +49,9 @@ makedepends=(
   'kwindowsystem'
 )
 
-# tuxedo-drivers provides the /dev/tuxedo_io kernel interface uccd talks to
+# tuxedo-drivers provides the /dev/tuxedo_io kernel interface for hardware control
 optdepends=(
-  'tuxedo-drivers: kernel module providing /dev/tuxedo_io hardware interface (required for daemon)'
+  'tuxedo-drivers: kernel module providing /dev/tuxedo_io hardware interface for hardware control'
 )
 
 # Preserve user-modified configuration across upgrades

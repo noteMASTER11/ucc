@@ -2093,14 +2093,9 @@ UccDBusService::UccDBusService()
   m_systemInfo = detectSystemInfo( m_deviceId );
   m_dbusData.systemInfoJSON = m_systemInfo.toJSON();
 
-  // Check device whitelist — unsupported machines get a functional D-Bus
-  // service (so clients can query IsDeviceSupported) but no hardware control.
+  // Allow the daemon to start on any Linux system. Hardware-specific features
+  // still report availability from the driver/sysfs capability checks below.
   m_dbusData.deviceSupported = ucc::isDeviceSupported();
-  if ( !m_dbusData.deviceSupported.load() )
-  {
-    syslog( LOG_WARNING, "[uccd] Device not in supported whitelist — running in passive mode" );
-    return;
-  }
 
   // detect display session type and initialize display modes
   initializeDisplayModes();
@@ -2950,10 +2945,6 @@ void UccDBusService::onStart()
 void UccDBusService::onWork()
 {
   if ( not m_started )
-    return;
-
-  // On unsupported devices, skip all hardware polling
-  if ( !m_dbusData.deviceSupported.load() )
     return;
 
   // update tuxedo wmi availability (matches typescript implementation)
@@ -4167,10 +4158,6 @@ void UccDBusService::loadSettings()
 
 void UccDBusService::initializeStartupProfile()
 {
-  // Skip on unsupported devices — no workers are running
-  if ( !m_dbusData.deviceSupported.load() )
-    return;
-
   UccProfile resolved = m_profileManager.resolveStartupProfile(
     m_deviceId,
     m_settings.stateMap,

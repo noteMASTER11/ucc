@@ -33,7 +33,7 @@ USE AT YOUR OWN RISK
 ### Runtime Requirements
 - Qt6 runtime libraries
 - KDE Plasma (for widgets)
-- tuxedo-drivers (kernel/user drivers required for hardware control)
+- tuxedo-drivers (optional; kernel/user drivers required for hardware control)
 
 ## Building
 

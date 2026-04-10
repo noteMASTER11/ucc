@@ -1402,8 +1402,9 @@ bool UccDBusInterfaceAdaptor::SetKeyboardBacklightStatesJSON( const QString &key
 
   auto inputJSON = keyboardBacklightStatesJSON.toStdString();
 
-  // The caller sends a JSON object:
+  // Profile paths send a JSON object:
   //   { "keyboardProfileId": "...", "states": [...] }
+  // CLI control paths send the states array directly.
   // Extract optional metadata before applying to hardware.
   auto extractStr = []( const std::string &json, const std::string &key ) -> std::string {
     std::string search = "\"" + key + "\":\"";
@@ -1416,8 +1417,14 @@ bool UccDBusInterfaceAdaptor::SetKeyboardBacklightStatesJSON( const QString &key
   };
   std::string keyboardProfileId = extractStr( inputJSON, "keyboardProfileId" );
 
-  // Apply the states array to hardware (extracts "states" from the object)
-  if ( !m_service->m_keyboardBacklightController.applyProfileKeyboardStates( inputJSON ) )
+  auto firstNonSpace = inputJSON.find_first_not_of( " \t\r\n" );
+  bool inputIsStatesArray = firstNonSpace != std::string::npos && inputJSON[firstNonSpace] == '[';
+
+  bool applied = inputIsStatesArray
+    ? m_service->m_keyboardBacklightController.applyStatesFromJSON( inputJSON )
+    : m_service->m_keyboardBacklightController.applyProfileKeyboardStates( inputJSON );
+
+  if ( !applied )
     return false;
 
   // Update the D-Bus readable state with the states *array* so
@@ -2232,6 +2239,26 @@ UccDBusService::UccDBusService()
       m_dbusData.cpuFrequencyMHz = frequencyMHz;
       if ( frequencyMHz > 0 )
         m_metricsStore.push( MetricId::CpuFrequency, static_cast< double >( frequencyMHz ) );
+    }
+  );
+
+  // CPU package temperature fallback via coretemp. FanControlWorker still uses
+  // EC/driver fan sensors for fan curves when Tuxedo I/O is available.
+  m_hardwareMonitorWorker->setCpuTemperatureCallback(
+    [this]( int temperatureCelsius ) {
+      if ( temperatureCelsius < 0 )
+        return;
+
+      const auto now = std::chrono::duration_cast< std::chrono::milliseconds >(
+        std::chrono::system_clock::now().time_since_epoch() ).count();
+
+      {
+        std::lock_guard< std::mutex > lock( m_dbusData.dataMutex );
+        if ( !m_dbusData.fans.empty() )
+          m_dbusData.fans[ 0 ].temp.set( static_cast< int64_t >( now ), temperatureCelsius );
+      }
+
+      m_metricsStore.push( MetricId::CpuTemp, now, temperatureCelsius );
     }
   );
 

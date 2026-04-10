@@ -1,0 +1,70 @@
+diff -ruN a/ite_8291/ite_8291.c b/ite_8291/ite_8291.c
+--- a/ite_8291/ite_8291.c	2026-02-24 20:27:00.000000000 +0400
++++ b/ite_8291/ite_8291.c	2026-04-11 03:23:41.583418866 +0400
+@@ -217,7 +217,8 @@
+ 		}
+ 	} else if ((dmi_match(DMI_PRODUCT_SKU, "STELLARIS16I07") ||
+ 		    dmi_match(DMI_PRODUCT_SKU, "STELLARIS16A07") ||
+-		    dmi_match(DMI_BOARD_NAME, "X6AR55xU"))
++		    dmi_match(DMI_BOARD_NAME, "X6AR55xU") ||
++		    dmi_match(DMI_BOARD_NAME, "YAOSHI Series-X6AR55xY"))
+ 		   && hdev->product == 0x600b) {
+ 		// all keys: reduce pink
+ 		*red = (170 * *red) / 255;
+diff -ruN a/tuxedo_compatibility_check/tuxedo_compatibility_check.c b/tuxedo_compatibility_check/tuxedo_compatibility_check.c
+--- a/tuxedo_compatibility_check/tuxedo_compatibility_check.c	2026-02-24 20:27:00.000000000 +0400
++++ b/tuxedo_compatibility_check/tuxedo_compatibility_check.c	2026-04-11 03:23:41.582418860 +0400
+@@ -216,6 +216,13 @@
+ 			DMI_MATCH(DMI_CHASSIS_VENDOR, "TUXEDO"),
+ 		},
+ 	},
++	{
++		.matches = {
++			DMI_MATCH(DMI_SYS_VENDOR, "MECHREVO"),
++			DMI_MATCH(DMI_PRODUCT_NAME, "YAOSHI Series"),
++			DMI_MATCH(DMI_BOARD_NAME, "YAOSHI Series-X6AR55xY"),
++		},
++	},
+ 	{ }
+ };
+ 
+diff -ruN a/tuxedo_io/tuxedo_io.c b/tuxedo_io/tuxedo_io.c
+--- a/tuxedo_io/tuxedo_io.c	2026-02-24 20:27:00.000000000 +0400
++++ b/tuxedo_io/tuxedo_io.c	2026-04-11 03:23:41.583418866 +0400
+@@ -254,7 +254,8 @@
+ 	} else if (dmi_match(DMI_BOARD_NAME, "X5KK45xS_X5SP45xS")) {
+ 		tdp_min_defs = tdp_min_xxxx45xs;
+ 		tdp_max_defs = tdp_max_xxxx45xs;
+-	} else if (dmi_match(DMI_BOARD_NAME, "X6AR55xU")) {
++	} else if (dmi_match(DMI_BOARD_NAME, "X6AR55xU") ||
++		   dmi_string_in(DMI_BOARD_NAME, "X6AR55xY")) {
+ 		tdp_min_defs = tdp_min_x6ar55xu;
+ 		tdp_max_defs = tdp_max_x6ar55xu;
+ 	} else if (dmi_match(DMI_BOARD_NAME, "X5AR45xS")) {
+diff -ruN a/uniwill_keyboard.h b/uniwill_keyboard.h
+--- a/uniwill_keyboard.h	2026-02-24 20:27:00.000000000 +0400
++++ b/uniwill_keyboard.h	2026-04-11 03:23:41.582418860 +0400
+@@ -969,6 +969,7 @@
+ 		  dmi_match(DMI_BOARD_NAME, "GM7IXxN") ||
+ 		  // Stellaris Gen7
+ 		  dmi_match(DMI_BOARD_NAME, "X6AR5xxY") ||
++		  dmi_match(DMI_BOARD_NAME, "YAOSHI Series-X6AR55xY") ||
+ 		  dmi_match(DMI_BOARD_NAME, "X6AR5xxY_mLED") ||
+ 		  dmi_match(DMI_BOARD_NAME, "X6FR5xxY") ||
+ 
+@@ -1440,6 +1441,7 @@
+ 	*status = false
+ 		// Stellaris 16 G7
+ 		|| dmi_match(DMI_BOARD_NAME, "X6AR5xxY")
++		|| dmi_match(DMI_BOARD_NAME, "YAOSHI Series-X6AR55xY")
+ 		|| dmi_match(DMI_BOARD_NAME, "X6AR5xxY_mLED")
+ 		// Stellaris 16 G6
+ 		|| dmi_match(DMI_BOARD_NAME, "GM6IXxB_MB1")
+@@ -1746,6 +1748,7 @@
+ 		|| dmi_match(DMI_BOARD_NAME, "XxKK4NAx_XxSP4NAx")
+ 		|| dmi_match(DMI_BOARD_NAME, "X5KK45xS_X5SP45xS")
+ 		|| dmi_match(DMI_BOARD_NAME, "X6AR55xU")
++		|| dmi_match(DMI_BOARD_NAME, "YAOSHI Series-X6AR55xY")
+ 		|| dmi_match(DMI_BOARD_NAME, "X5AR45xS")
+ #endif
+ 	;

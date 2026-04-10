@@ -273,6 +273,11 @@ public:
   using CpuFrequencyCallback = std::function< void( int frequencyMHz ) >;
 
   /**
+   * @brief Callback function type for CPU temperature updates (°C)
+   */
+  using CpuTemperatureCallback = std::function< void( int temperatureCelsius ) >;
+
+  /**
    * @brief Constructor
    * @param cpuPowerUpdateCallback Called with CPU power JSON + raw watts when updated
    * @param getSensorDataCollectionStatus Returns whether sensor data collection is enabled
@@ -333,6 +338,16 @@ public:
   void setCpuFrequencyCallback( CpuFrequencyCallback callback ) noexcept;
 
   /**
+   * @brief Set callback for CPU package temperature updates
+   *
+   * Called every cycle (~800ms) with the current package temperature in °C.
+   * The value is -1 if no coretemp package sensor is available.
+   *
+   * @param callback Function called with temperature in °C
+   */
+  void setCpuTemperatureCallback( CpuTemperatureCallback callback ) noexcept;
+
+  /**
    * @brief Check if NVIDIA Prime is supported on this system
    * @return true if Prime is supported
    */
@@ -370,6 +385,9 @@ private:
 
   // --- CPU frequency callback ---
   CpuFrequencyCallback m_cpuFrequencyCallback;
+
+  // --- CPU temperature callback ---
+  CpuTemperatureCallback m_cpuTemperatureCallback;
 
   // --- Prime state ---
   std::function< void( const std::string & ) > m_setPrimeState;
@@ -418,4 +436,8 @@ private:
 
   // CPU frequency methods
   void updateCpuFrequency() noexcept;
+
+  // CPU temperature methods
+  void updateCpuTemperature() noexcept;
+  [[nodiscard]] int readCoretempPackageTemperature() const noexcept;
 };

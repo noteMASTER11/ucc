@@ -304,6 +304,8 @@ HardwareMonitorWorker::HardwareMonitorWorker(
   , m_RAPLConstraint2Status( false )
   , m_cpuPowerUpdateCallback( std::move( cpuPowerUpdateCallback ) )
   , m_getSensorDataCollectionStatus( std::move( getSensorDataCollectionStatus ) )
+  , m_cpuFrequencyCallback( nullptr )
+  , m_cpuTemperatureCallback( nullptr )
   , m_setPrimeState( std::move( setPrimeStateCallback ) )
   , m_primeSupported( false )
   , m_isDisplayMuxDevice( isDisplayMuxDevice )
@@ -328,6 +330,11 @@ void HardwareMonitorWorker::setWebcamCallbacks( WebcamHwReader reader, WebcamSta
 void HardwareMonitorWorker::setCpuFrequencyCallback( CpuFrequencyCallback callback ) noexcept
 {
   m_cpuFrequencyCallback = std::move( callback );
+}
+
+void HardwareMonitorWorker::setCpuTemperatureCallback( CpuTemperatureCallback callback ) noexcept
+{
+  m_cpuTemperatureCallback = std::move( callback );
 }
 
 bool HardwareMonitorWorker::isPrimeSupported() const noexcept
@@ -367,6 +374,9 @@ void HardwareMonitorWorker::onWork()
 
   // --- CPU frequency: every cycle (≈ 800ms) ---
   updateCpuFrequency();
+
+  // --- CPU temperature: every cycle (≈ 800ms) ---
+  updateCpuTemperature();
 
   // --- CPU power: every 3rd cycle (≈ 2400ms, close to original 2000ms) ---
   if ( m_cycleCounter % 3 == 0 )
@@ -994,4 +1004,59 @@ void HardwareMonitorWorker::updateCpuFrequency() noexcept
   catch ( ... ) { /* ignore */ }
 
   m_cpuFrequencyCallback( -1 );
+}
+
+void HardwareMonitorWorker::updateCpuTemperature() noexcept
+{
+  if ( !m_cpuTemperatureCallback )
+    return;
+
+  m_cpuTemperatureCallback( readCoretempPackageTemperature() );
+}
+
+int HardwareMonitorWorker::readCoretempPackageTemperature() const noexcept
+{
+  namespace fs = std::filesystem;
+
+  try
+  {
+    for ( const auto &entry : fs::directory_iterator( "/sys/class/hwmon" ) )
+    {
+      const auto hwmonPath = entry.path();
+      std::ifstream nameFile( hwmonPath / "name" );
+      std::string name;
+      if ( !std::getline( nameFile, name ) || name != "coretemp" )
+        continue;
+
+      for ( const auto &sensorEntry : fs::directory_iterator( hwmonPath ) )
+      {
+        const std::string filename = sensorEntry.path().filename().string();
+        if ( filename.rfind( "temp", 0 ) != 0 ||
+             filename.find( "_label" ) == std::string::npos )
+          continue;
+
+        std::ifstream labelFile( sensorEntry.path() );
+        std::string label;
+        if ( !std::getline( labelFile, label ) || label != "Package id 0" )
+          continue;
+
+        std::string inputFilename = filename;
+        const size_t labelPos = inputFilename.find( "_label" );
+        inputFilename.replace( labelPos, std::string( "_label" ).length(), "_input" );
+
+        std::ifstream inputFile( hwmonPath / inputFilename );
+        int millidegrees = -1;
+        if ( inputFile >> millidegrees )
+          return ( millidegrees + 500 ) / 1000;
+      }
+
+      std::ifstream fallbackInput( hwmonPath / "temp1_input" );
+      int millidegrees = -1;
+      if ( fallbackInput >> millidegrees )
+        return ( millidegrees + 500 ) / 1000;
+    }
+  }
+  catch ( ... ) { }
+
+  return -1;
 }

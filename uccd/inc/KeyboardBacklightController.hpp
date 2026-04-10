@@ -459,7 +459,8 @@ private:
     if ( states.empty() || m_ledPaths.empty() )
       return;
 
-    setBrightness( states[0].brightness );
+    for ( size_t i = 0; i < m_ledPaths.size() && i < states.size(); ++i )
+      setBrightness( i, states[i].brightness );
 
     if ( m_capabilities.maxRed > 0 )
     {
@@ -472,14 +473,17 @@ private:
     }
   }
 
-  void setBrightness( int brightness )
+  void setBrightness( size_t zoneIndex, int brightness )
   {
-    if ( m_ledPaths.empty() )
+    if ( zoneIndex >= m_ledPaths.size() )
       return;
 
-    SysfsNode< int > brightnessNode( m_ledPaths[0] + "/brightness" );
+    SysfsNode< int > brightnessNode( m_ledPaths[zoneIndex] + "/brightness" );
     if ( !brightnessNode.write( brightness ) )
-      std::cerr << "[KeyboardBacklight] Failed to set brightness to " << brightness << std::endl;
+    {
+      std::cerr << "[KeyboardBacklight] Failed to set brightness for zone "
+                << zoneIndex << " to " << brightness << std::endl;
+    }
   }
 
   void setMultiIntensity( size_t zoneIndex, int red, int green, int blue )
@@ -497,11 +501,18 @@ private:
                        std::to_string( green ) + " " +
                        std::to_string( blue );
 
-    std::ofstream file( multiIntensityPath, std::ios::app );
-    if ( file.is_open() )
+    std::ofstream file( multiIntensityPath );
+    if ( !file.is_open() )
     {
-      file << value;
-      file.close();
+      std::cerr << "[KeyboardBacklight] Failed to open " << multiIntensityPath << std::endl;
+      return;
+    }
+
+    file << value << '\n';
+    if ( !file.good() )
+    {
+      std::cerr << "[KeyboardBacklight] Failed to write multi_intensity for zone "
+                << zoneIndex << std::endl;
     }
   }
 
@@ -516,11 +527,17 @@ private:
     if ( !fs::exists( bufferPath, ec ) )
       return;
 
-    std::ofstream file( bufferPath, std::ios::app );
-    if ( file.is_open() )
+    std::ofstream file( bufferPath );
+    if ( !file.is_open() )
     {
-      file << ( bufferOn ? "1" : "0" );
-      file.close();
+      std::cerr << "[KeyboardBacklight] Failed to open " << bufferPath << std::endl;
+      return;
+    }
+
+    file << ( bufferOn ? "1" : "0" ) << '\n';
+    if ( !file.good() )
+    {
+      std::cerr << "[KeyboardBacklight] Failed to write buffer_input" << std::endl;
     }
   }
 };

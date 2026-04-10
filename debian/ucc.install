@@ -17,8 +17,6 @@ usr/share/icons/hicolor/*/apps/ucc-gui.png
 usr/share/icons/hicolor/*/apps/ucc-tray.png
 usr/share/icons/hicolor/scalable/apps/ucc-gui*.svg
 usr/share/icons/hicolor/scalable/apps/ucc-tray*.svg
-usr/share/pixmaps/ucc-gui.svg
-usr/share/pixmaps/ucc-tray.svg
 usr/share/man/man1/ucc-cli.1
 usr/share/bash-completion/completions/ucc-cli
 usr/share/gnome-shell/extensions/ucc@uniwill.com/metadata.json

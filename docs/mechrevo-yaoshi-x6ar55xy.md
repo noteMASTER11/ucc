@@ -17,7 +17,10 @@ The patch also exposes the NVIDIA Dynamic Boost/cTGP sysfs controls that are
 hidden behind `#ifdef DEBUG` in `tuxedo_nb02_nvidia_power_ctrl`. Without those
 extra nodes, UCC can write `ctgp_offset`, but cannot force-refresh
 `ctgp_enable`, `db_enable`, `tpp_offset`, and `db_offset` when the EC/NVIDIA
-driver keeps the active dGPU power limit pinned to the default value.
+driver keeps the active dGPU power limit pinned to the default value. The patch
+also changes the module init value for `ctgp_offset` from `0` to raw `255` so
+the EC boots into the most aggressive exposed Dynamic Boost/cTGP state before
+UCC starts enforcing the same state.
 
 Apply the driver patch from this directory before rebuilding DKMS:
 
@@ -39,3 +42,8 @@ GPU power-control nodes:
 /sys/devices/platform/tuxedo_nvidia_power_ctrl/tpp_offset
 /sys/devices/platform/tuxedo_nvidia_power_ctrl/db_offset
 ```
+
+UCC's Mechrevo aggressive dGPU path now keeps `ctgp_offset=255`, `ctgp_enable=1`,
+`db_enable=1`, `tpp_offset=255`, `db_offset=25`, forces the Uniwill `overboost`
+profile, and writes the maximum reported ODM TDP values while NVIDIA cTGP is
+available.

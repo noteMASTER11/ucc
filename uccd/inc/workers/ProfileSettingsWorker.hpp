@@ -193,18 +193,17 @@ private:
     "/sys/devices/platform/tuxedo_nvidia_power_ctrl/tpp_offset";
   static inline const std::string NVIDIA_DB_OFFSET =
     "/sys/devices/platform/tuxedo_nvidia_power_ctrl/db_offset";
+  static constexpr int32_t NVIDIA_AGGRESSIVE_CTGP_OFFSET = 255;
+  static constexpr int32_t NVIDIA_AGGRESSIVE_TPP_OFFSET = 255;
+  static constexpr int32_t NVIDIA_AGGRESSIVE_DB_OFFSET = 25;
+  static inline const std::string UNIWILL_OVERBOOST_PROFILE = "overboost";
 
   void detectODMProfileType();
   std::vector< std::string > readPlatformProfileChoices( const std::string &path );
 
-  bool getAvailableProfilesViaAPI( [[maybe_unused]] std::vector< std::string > &profiles )
-  {
-    return false;
-  }
-
-  std::string getDefaultProfileViaAPI() { return ""; }
-
-  bool setProfileViaAPI( [[maybe_unused]] const std::string &profileName ) { return false; }
+  bool getAvailableProfilesViaAPI( std::vector< std::string > &profiles );
+  std::string getDefaultProfileViaAPI();
+  bool setProfileViaAPI( const std::string &profileName );
 
   void applyODMProfile();
   void applyPlatformProfile(

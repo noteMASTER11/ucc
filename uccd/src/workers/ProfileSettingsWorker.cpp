@@ -32,6 +32,7 @@ void ProfileSettingsWorker::start()
   // worker is created.  We only need to initialise charging internal state here
   // so that the getter methods (getCurrentChargingProfile etc.) work.
   initializeChargingSettings();
+  initNVIDIAPowerCTRL();
 }
 
 std::vector< TDPInfo > ProfileSettingsWorker::getTDPInfo()
@@ -237,6 +238,9 @@ void ProfileSettingsWorker::validateNVIDIACTGPOffset()
   if ( !m_nvidiaPowerCTRLAvailable )
     return;
 
+  if ( m_cTGPAdjustmentSupported && m_lastAppliedNVIDIAOffset != NVIDIA_AGGRESSIVE_CTGP_OFFSET )
+    applyNVIDIACTGPOffset( NVIDIA_AGGRESSIVE_CTGP_OFFSET );
+
   std::ifstream file( NVIDIA_CTGP_OFFSET );
   if ( file.is_open() )
   {
@@ -316,6 +320,37 @@ std::vector< std::string > ProfileSettingsWorker::readPlatformProfileChoices(
   }
 
   return profiles;
+}
+
+bool ProfileSettingsWorker::getAvailableProfilesViaAPI( std::vector< std::string > &profiles )
+{
+  if ( m_ioApi.getAvailableODMPerformanceProfiles( profiles ) )
+    return true;
+
+  if ( checkNVIDIAAvailability() )
+  {
+    profiles = { "power_save", "enthusiast", UNIWILL_OVERBOOST_PROFILE };
+    syslog( LOG_WARNING,
+            "ProfileSettingsWorker: ODM profile list unavailable; forcing Uniwill profile "
+            "fallback for aggressive dGPU power" );
+    return true;
+  }
+
+  return false;
+}
+
+std::string ProfileSettingsWorker::getDefaultProfileViaAPI()
+{
+  std::string profileName;
+  if ( m_ioApi.getDefaultODMPerformanceProfile( profileName ) )
+    return profileName;
+
+  return "";
+}
+
+bool ProfileSettingsWorker::setProfileViaAPI( const std::string &profileName )
+{
+  return !profileName.empty() && m_ioApi.setODMPerformanceProfile( profileName );
 }
 
 void ProfileSettingsWorker::applyODMProfile()
@@ -411,6 +446,17 @@ void ProfileSettingsWorker::applyProfileViaAPI( const std::string &chosenProfile
     return;
   }
 
+  if ( m_nvidiaPowerCTRLAvailable
+       && std::ranges::find( availableProfiles, UNIWILL_OVERBOOST_PROFILE ) != availableProfiles.end()
+       && profileToApply != UNIWILL_OVERBOOST_PROFILE )
+  {
+    syslog( LOG_WARNING,
+            "ProfileSettingsWorker: Forcing ODM profile '%s' for aggressive dGPU power "
+            "(requested '%s')",
+            UNIWILL_OVERBOOST_PROFILE.c_str(), profileToApply.c_str() );
+    profileToApply = UNIWILL_OVERBOOST_PROFILE;
+  }
+
   if ( setProfileViaAPI( profileToApply ) )
   {
     syslog( LOG_INFO, "ProfileSettingsWorker: Set ODM profile to '%s'",
@@ -482,7 +528,16 @@ void ProfileSettingsWorker::applyODMPowerLimits()
 
   std::vector< uint32_t > newTDPValues;
 
-  if ( not odmPowerLimits.tdpValues.empty() )
+  if ( m_nvidiaPowerCTRLAvailable && m_cTGPAdjustmentSupported )
+  {
+    for ( const auto &tdp : tdpInfo )
+    {
+      newTDPValues.push_back( tdp.max );
+    }
+
+    logLine( "ProfileSettingsWorker: Forcing maximum ODM TDPs for aggressive dGPU power" );
+  }
+  else if ( not odmPowerLimits.tdpValues.empty() )
   {
     for ( int val : odmPowerLimits.tdpValues )
       newTDPValues.push_back( static_cast< uint32_t >( val ) );
@@ -662,6 +717,7 @@ void ProfileSettingsWorker::initNVIDIAPowerCTRL()
   {
     // Always query hardware power limits so the GUI has real values
     queryNVIDIAPowerLimits();
+    applyNVIDIACTGPOffset( NVIDIA_AGGRESSIVE_CTGP_OFFSET );
   }
 }
 
@@ -681,9 +737,8 @@ bool ProfileSettingsWorker::applyNVIDIACTGPOffset( int32_t ctgpOffset )
     return false;
   }
 
-  // Clamp cTGP offset to valid range: [-(max-default), (max-default)]
-  const int32_t maxAdjustment = m_nvidiaPowerCTRLMaxPowerLimit - m_nvidiaPowerCTRLDefaultPowerLimit;
-  ctgpOffset = std::clamp( ctgpOffset, -maxAdjustment, maxAdjustment );
+  const int32_t requestedOffset = ctgpOffset;
+  ctgpOffset = NVIDIA_AGGRESSIVE_CTGP_OFFSET;
 
   const bool forcedBeforeWrite = forceNVIDIAPowerControlUnlocked();
 
@@ -735,7 +790,8 @@ bool ProfileSettingsWorker::applyNVIDIACTGPOffset( int32_t ctgpOffset )
 
     if ( verifiedValue == ctgpOffset )
     {
-      std::cout << "[NVIDIAPowerCTRL] Applied cTGP offset: " << ctgpOffset << std::endl;
+      std::cout << "[NVIDIAPowerCTRL] Applied aggressive cTGP offset: " << ctgpOffset
+                << " (requested " << requestedOffset << ")" << std::endl;
     }
     else
     {
@@ -785,8 +841,10 @@ bool ProfileSettingsWorker::forceNVIDIAPowerControlUnlocked( bool verbose )
   // modules expose only ctgp_offset, making the calls harmless no-ops.
   const bool ctgpEnabled = writeNVIDIAPowerControlNodeIfAvailable( NVIDIA_CTGP_ENABLE, 1 );
   const bool dbEnabled = writeNVIDIAPowerControlNodeIfAvailable( NVIDIA_DB_ENABLE, 1 );
-  const bool tppUnlocked = writeNVIDIAPowerControlNodeIfAvailable( NVIDIA_TPP_OFFSET, 255 );
-  const bool dbOffsetSet = writeNVIDIAPowerControlNodeIfAvailable( NVIDIA_DB_OFFSET, 25 );
+  const bool tppUnlocked = writeNVIDIAPowerControlNodeIfAvailable(
+    NVIDIA_TPP_OFFSET, NVIDIA_AGGRESSIVE_TPP_OFFSET );
+  const bool dbOffsetSet = writeNVIDIAPowerControlNodeIfAvailable(
+    NVIDIA_DB_OFFSET, NVIDIA_AGGRESSIVE_DB_OFFSET );
 
   if ( verbose && ( ctgpEnabled || dbEnabled || tppUnlocked || dbOffsetSet ) )
   {

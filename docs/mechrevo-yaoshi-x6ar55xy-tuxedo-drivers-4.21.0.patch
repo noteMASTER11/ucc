@@ -48,6 +48,9 @@ diff -ruN a/tuxedo_nb02_nvidia_power_ctrl/tuxedo_nb02_nvidia_power_ctrl.c b/tuxe
 -#ifdef DEBUG
 @@ -238 +236,0 @@
 -#endif // DEBUG
+@@ -249 +247 @@
+-	result = uniwill_write_ec_ram(UW_EC_REG_CTGP_DB_CTGP_OFFSET, 0);
++	result = uniwill_write_ec_ram(UW_EC_REG_CTGP_DB_CTGP_OFFSET, 255);
 @@ -274 +271,0 @@
 -#ifdef DEBUG
 @@ -290 +286,0 @@
@@ -71,6 +74,8 @@ diff -ruN a/uniwill_keyboard.h b/uniwill_keyboard.h
  		|| dmi_match(DMI_BOARD_NAME, "X6AR5xxY_mLED")
  		// Stellaris 16 G6
  		|| dmi_match(DMI_BOARD_NAME, "GM6IXxB_MB1")
+@@ -1718,0 +1719 @@
++		|| dmi_match(DMI_BOARD_NAME, "YAOSHI Series-X6AR55xY")
 @@ -1746,6 +1748,7 @@
  		|| dmi_match(DMI_BOARD_NAME, "XxKK4NAx_XxSP4NAx")
  		|| dmi_match(DMI_BOARD_NAME, "X5KK45xS_X5SP45xS")

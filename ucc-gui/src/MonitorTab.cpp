@@ -26,9 +26,12 @@
 #include <QMainWindow>
 #include <QStatusBar>
 #include <QApplication>
+#include <QProcessEnvironment>
+#include <QStandardPaths>
 #include <cstring>
 #include <algorithm>
 #include <functional>
+#include <optional>
 
 namespace ucc
 {
@@ -74,6 +77,103 @@ struct MetricDef
 };
 
 static constexpr int METRIC_COUNT = 10;
+
+namespace
+{
+
+struct DGpuStressSpec
+{
+  QString     program;
+  QStringList args;
+  QString     label;
+  int         processCount = 1;
+};
+
+std::optional< DGpuStressSpec > selectDGpuStressRunner()
+{
+  // Prefer dedicated OSS GPU stress/benchmark tools when the user has them.
+  // Fall back to Vulkan/OpenGL demo loops shipped by common open drivers/tools.
+  if ( const QString path = QStandardPaths::findExecutable( QStringLiteral( "gpu_burn" ) ); !path.isEmpty() )
+    return DGpuStressSpec{ path, { QStringLiteral( "10" ) }, QStringLiteral( "gpu_burn" ), 1 };
+
+  if ( const QString path = QStandardPaths::findExecutable( QStringLiteral( "gpu-burn" ) ); !path.isEmpty() )
+    return DGpuStressSpec{ path, { QStringLiteral( "10" ) }, QStringLiteral( "gpu-burn" ), 1 };
+
+  if ( const QString clpeak = QStandardPaths::findExecutable( QStringLiteral( "clpeak" ) ); !clpeak.isEmpty() )
+  {
+    if ( const QString timeout = QStandardPaths::findExecutable( QStringLiteral( "timeout" ) ); !timeout.isEmpty() )
+    {
+      return DGpuStressSpec{
+        timeout,
+        {
+          QStringLiteral( "--kill-after=1s" ),
+          QStringLiteral( "10s" ),
+          QStringLiteral( "bash" ),
+          QStringLiteral( "-lc" ),
+          QStringLiteral( "while :; do clpeak -p 0 -d 0 --compute-sp >/dev/null 2>&1; done" )
+        },
+        QStringLiteral( "clpeak" ),
+        4
+      };
+    }
+
+    return DGpuStressSpec{
+      clpeak,
+      { QStringLiteral( "-p" ), QStringLiteral( "0" ), QStringLiteral( "-d" ), QStringLiteral( "0" ),
+        QStringLiteral( "--compute-sp" ) },
+      QStringLiteral( "clpeak" ),
+      4
+    };
+  }
+
+  if ( const QString path = QStandardPaths::findExecutable( QStringLiteral( "vkmark" ) ); !path.isEmpty() )
+    return DGpuStressSpec{ path, { QStringLiteral( "--run-forever" ) }, QStringLiteral( "vkmark" ), 1 };
+
+  if ( const QString path = QStandardPaths::findExecutable( QStringLiteral( "glmark2" ) ); !path.isEmpty() )
+    return DGpuStressSpec{ path, { QStringLiteral( "--run-forever" ) }, QStringLiteral( "glmark2" ), 1 };
+
+  if ( const QString path = QStandardPaths::findExecutable( QStringLiteral( "vkcube" ) ); !path.isEmpty() )
+  {
+    return DGpuStressSpec{
+      path,
+      {
+        QStringLiteral( "--gpu_number" ), QStringLiteral( "0" ),
+        QStringLiteral( "--present_mode" ), QStringLiteral( "0" ),
+        QStringLiteral( "--width" ), QStringLiteral( "1920" ),
+        QStringLiteral( "--height" ), QStringLiteral( "1080" )
+      },
+      QStringLiteral( "vkcube" ),
+      4
+    };
+  }
+
+  if ( const QString path = QStandardPaths::findExecutable( QStringLiteral( "glxgears" ) ); !path.isEmpty() )
+  {
+    return DGpuStressSpec{
+      path,
+      {
+        QStringLiteral( "-swapinterval" ), QStringLiteral( "0" ),
+        QStringLiteral( "-geometry" ), QStringLiteral( "1920x1080" )
+      },
+      QStringLiteral( "glxgears" ),
+      4
+    };
+  }
+
+  return std::nullopt;
+}
+
+QProcessEnvironment dGpuStressEnvironment()
+{
+  auto env = QProcessEnvironment::systemEnvironment();
+  env.insert( QStringLiteral( "__NV_PRIME_RENDER_OFFLOAD" ), QStringLiteral( "1" ) );
+  env.insert( QStringLiteral( "__GLX_VENDOR_LIBRARY_NAME" ), QStringLiteral( "nvidia" ) );
+  env.insert( QStringLiteral( "__VK_LAYER_NV_optimus" ), QStringLiteral( "NVIDIA_only" ) );
+  env.insert( QStringLiteral( "vblank_mode" ), QStringLiteral( "0" ) );
+  return env;
+}
+
+} // namespace
 
 // Order matches MetricId enum in MetricsHistoryStore.hpp
 static const MetricDef kMetrics[ METRIC_COUNT ] =
@@ -231,6 +331,9 @@ MonitorTab::MonitorTab( UccdClient *client, QWidget *parent )
 
   m_fetchTimer.setInterval( 1000 );
   connect( &m_fetchTimer, &QTimer::timeout, this, &MonitorTab::fetchData );
+
+  m_dGpuStressTimer.setInterval( 250 );
+  connect( &m_dGpuStressTimer, &QTimer::timeout, this, &MonitorTab::sampleDGpuStressTest );
 }
 
 void MonitorTab::setMonitoringActive( bool active )
@@ -265,6 +368,157 @@ void MonitorTab::setMonitoringActive( bool active )
   else
   {
     m_fetchTimer.stop();
+  }
+}
+
+void MonitorTab::startDGpuStressTest()
+{
+  if ( m_dGpuStressRunning )
+    return;
+
+  const auto runner = selectDGpuStressRunner();
+  if ( !runner )
+  {
+    if ( m_dGpuStressLabel )
+      m_dGpuStressLabel->setText( "Install gpu-burn, clpeak, vkmark, glmark2, vkcube, or glxgears" );
+    return;
+  }
+
+  m_dGpuStressRunner = runner->label;
+  m_dGpuStressPeakW = 0.0;
+  m_dGpuStressRunning = true;
+  m_dGpuStressProcesses.clear();
+
+  if ( m_dGpuStressButton )
+    m_dGpuStressButton->setEnabled( false );
+  if ( m_dGpuStressLabel )
+    m_dGpuStressLabel->setText( QStringLiteral( "%1: starting" ).arg( m_dGpuStressRunner ) );
+
+  const QProcessEnvironment env = dGpuStressEnvironment();
+  const int processCount = std::max( 1, runner->processCount );
+
+  for ( int i = 0; i < processCount; ++i )
+  {
+    auto *process = new QProcess( this );
+    process->setProgram( runner->program );
+    process->setArguments( runner->args );
+    process->setProcessEnvironment( env );
+    process->setProcessChannelMode( QProcess::MergedChannels );
+    process->setStandardOutputFile( QProcess::nullDevice() );
+
+    connect( process, &QProcess::errorOccurred, this, [this]() {
+      bool anyRunning = false;
+      for ( auto *p : m_dGpuStressProcesses )
+        anyRunning = anyRunning || ( p && p->state() != QProcess::NotRunning );
+      if ( m_dGpuStressRunning && !anyRunning )
+        finishDGpuStressTest();
+    } );
+
+    connect( process, qOverload< int, QProcess::ExitStatus >( &QProcess::finished ),
+             this, [this]( int, QProcess::ExitStatus ) {
+      bool anyRunning = false;
+      for ( auto *p : m_dGpuStressProcesses )
+        anyRunning = anyRunning || ( p && p->state() != QProcess::NotRunning );
+      if ( m_dGpuStressRunning && !anyRunning )
+        finishDGpuStressTest();
+    } );
+
+    process->start();
+    if ( process->waitForStarted( 1000 ) )
+      m_dGpuStressProcesses.push_back( process );
+    else
+      process->deleteLater();
+  }
+
+  if ( m_dGpuStressProcesses.empty() )
+  {
+    m_dGpuStressRunning = false;
+    if ( m_dGpuStressButton )
+      m_dGpuStressButton->setEnabled( true );
+    if ( m_dGpuStressLabel )
+      m_dGpuStressLabel->setText( QStringLiteral( "%1 failed to start" ).arg( m_dGpuStressRunner ) );
+    return;
+  }
+
+  m_dGpuStressElapsed.restart();
+  sampleDGpuStressTest();
+  m_dGpuStressTimer.start();
+
+  QTimer::singleShot( 10000, this, [this]() {
+    if ( m_dGpuStressRunning )
+      finishDGpuStressTest();
+  } );
+}
+
+void MonitorTab::sampleDGpuStressTest()
+{
+  if ( !m_dGpuStressRunning )
+    return;
+
+  double currentW = -1.0;
+  if ( m_client )
+  {
+    if ( auto power = m_client->getGpuPower(); power && *power >= 0.0 )
+    {
+      currentW = *power;
+      m_dGpuStressPeakW = std::max( m_dGpuStressPeakW, currentW );
+    }
+  }
+
+  if ( !m_dGpuStressLabel )
+    return;
+
+  const double seconds = static_cast< double >( m_dGpuStressElapsed.elapsed() ) / 1000.0;
+  if ( currentW >= 0.0 )
+  {
+    m_dGpuStressLabel->setText( QStringLiteral( "%1: %2 W now, %3 W peak, %4 s" )
+                                  .arg( m_dGpuStressRunner )
+                                  .arg( currentW, 0, 'f', 1 )
+                                  .arg( m_dGpuStressPeakW, 0, 'f', 1 )
+                                  .arg( seconds, 0, 'f', 1 ) );
+  }
+  else
+  {
+    m_dGpuStressLabel->setText( QStringLiteral( "%1: running, power n/a, %2 s" )
+                                  .arg( m_dGpuStressRunner )
+                                  .arg( seconds, 0, 'f', 1 ) );
+  }
+}
+
+void MonitorTab::finishDGpuStressTest()
+{
+  if ( !m_dGpuStressRunning )
+    return;
+
+  sampleDGpuStressTest();
+  m_dGpuStressRunning = false;
+  m_dGpuStressTimer.stop();
+
+  for ( auto *process : m_dGpuStressProcesses )
+  {
+    if ( !process )
+      continue;
+
+    if ( process->state() != QProcess::NotRunning )
+    {
+      process->terminate();
+      if ( !process->waitForFinished( 1000 ) )
+      {
+        process->kill();
+        process->waitForFinished( 1000 );
+      }
+    }
+    process->deleteLater();
+  }
+  m_dGpuStressProcesses.clear();
+
+  if ( m_dGpuStressButton )
+    m_dGpuStressButton->setEnabled( true );
+  if ( m_dGpuStressLabel )
+  {
+    m_dGpuStressLabel->setText( QStringLiteral( "%1: peak %2 W in 10 s" )
+                                  .arg( m_dGpuStressRunner )
+                                  .arg( m_dGpuStressPeakW, 0, 'f', 1 ) );
   }
 }
 
@@ -318,6 +572,19 @@ void MonitorTab::setupUI()
   m_pauseLabel->setStyleSheet( "QLabel { color: #FF6B6B; font-weight: bold; padding: 0 8px; }" );
   m_pauseLabel->hide();
   legendLayout->addWidget( m_pauseLabel, row, col );
+
+  if ( ++col >= 5 ) { col = 0; ++row; }
+
+  m_dGpuStressButton = new QPushButton( "Stress dGPU 10 s" );
+  m_dGpuStressButton->setToolTip( "Runs a short dGPU stress load and reports the peak measured dGPU power." );
+  connect( m_dGpuStressButton, &QPushButton::clicked, this, &MonitorTab::startDGpuStressTest );
+  legendLayout->addWidget( m_dGpuStressButton, row, col );
+
+  if ( ++col >= 5 ) { col = 0; ++row; }
+
+  m_dGpuStressLabel = new QLabel( "dGPU stress: ready" );
+  m_dGpuStressLabel->setMinimumWidth( 220 );
+  legendLayout->addWidget( m_dGpuStressLabel, row, col, 1, 2 );
 
   mainLayout->addWidget( legendBox );
 

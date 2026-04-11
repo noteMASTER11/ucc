@@ -40,6 +40,8 @@
 #include <QWheelEvent>
 #include <QGraphicsSceneMouseEvent>
 #include <QRubberBand>
+#include <QElapsedTimer>
+#include <QProcess>
 #include <map>
 #include <vector>
 #include <functional>
@@ -85,6 +87,8 @@ protected:
 
 private slots:
   void fetchData();
+  void startDGpuStressTest();
+  void sampleDGpuStressTest();
 
 private:
   // --- Setup helpers ---
@@ -129,6 +133,9 @@ private:
 
   /** Initialize m_maxPowerW from hardware TDP and GPU limits. */
   void initializeMaxPowerFromHardware();
+
+  /** Stop the temporary dGPU stress process and report peak power draw. */
+  void finishDGpuStressTest();
 
   /** Trim series points that fall outside the visible time window. */
   void trimSeries();
@@ -273,10 +280,18 @@ private:
   // --- Controls ---
   QCheckBox *m_unifiedCheckBox = nullptr;
   QLabel    *m_pauseLabel      = nullptr;  ///< Status indicator for pause mode
+  QPushButton *m_dGpuStressButton = nullptr;
+  QLabel      *m_dGpuStressLabel  = nullptr;
 
   // --- State ---
   UccdClient *m_client = nullptr;
   QTimer      m_fetchTimer;
+  QTimer      m_dGpuStressTimer;
+  QElapsedTimer m_dGpuStressElapsed;
+  std::vector< QProcess * > m_dGpuStressProcesses;
+  QString     m_dGpuStressRunner;
+  double      m_dGpuStressPeakW = 0.0;
+  bool        m_dGpuStressRunning = false;
   qint64      m_lastTimestamp = 0;    ///< Last fetched timestamp (ms since epoch)
   int         m_windowSeconds = 300;  ///< Visible time window (default 5 min)
   bool        m_unifiedSeriesActive = false;  ///< Shadow series created?

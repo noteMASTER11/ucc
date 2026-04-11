@@ -105,7 +105,15 @@ void GpuProfileTab::setupUI()
   m_resetButton->setMaximumWidth( 80 );
   m_resetButton->setVisible( m_ocAvailable );
 
+  m_aggressiveP0Toggle = new QCheckBox( "P0 dGPU Force" );
+  m_aggressiveP0Toggle->setVisible( true );
+  m_aggressiveP0Toggle->setEnabled( false );
+  m_aggressiveP0Toggle->setToolTip(
+    "Forces the Mechrevo/TUXEDO NVIDIA power-control path to max cTGP, Dynamic Boost, "
+    "overboost, and maximum ODM TDP when this GPU OC profile is applied." );
+
   selectLayout->addWidget( m_gpuProfileCombo, 1 );
+  selectLayout->addWidget( m_aggressiveP0Toggle );
   selectLayout->addWidget( m_applyButton );
   selectLayout->addWidget( m_saveButton );
   selectLayout->addWidget( m_copyButton );
@@ -187,13 +195,6 @@ void GpuProfileTab::setupUI()
   powerLayout->addWidget( m_powerLimitSlider, 1 );
   powerLayout->addWidget( m_powerLimitValue );
   contentLayout->addWidget( powerGroup );
-
-  m_aggressiveP0Toggle = new QCheckBox( "Aggressive P0 dGPU State" );
-  m_aggressiveP0Toggle->setVisible( m_ocAvailable );
-  m_aggressiveP0Toggle->setToolTip(
-    "Forces the Mechrevo/TUXEDO NVIDIA power-control path to max cTGP, Dynamic Boost, "
-    "overboost, and maximum ODM TDP when this GPU OC profile is applied." );
-  contentLayout->addWidget( m_aggressiveP0Toggle );
 
   // === GPU LOCKED CLOCKS ===
   m_gpuLockedGroup = new QGroupBox( "GPU Core Locked Clocks" );
@@ -405,7 +406,7 @@ void GpuProfileTab::updateButtonStates( bool uccdConnected )
   if ( m_powerLimitSlider )
     m_powerLimitSlider->setEnabled( controlsEnabled && m_powerMaxW > m_powerMinW );
   if ( m_aggressiveP0Toggle )
-    m_aggressiveP0Toggle->setEnabled( controlsEnabled && m_uccdClient
+    m_aggressiveP0Toggle->setEnabled( uccdConnected && m_ocAvailable && m_uccdClient
                                       && m_uccdClient->getNVIDIAPowerCTRLAvailable().value_or( false ) );
 
   // Allow renaming custom profiles

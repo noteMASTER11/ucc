@@ -52,7 +52,7 @@ handled by the NVIDIA driver stack rather than UCC GPU OC profiles. Driver
 `clpeak`. After installing driver `595.58.03` and enabling `nvidia-powerd`, the
 driver reported `P0` and a 175 W current power limit. UCC should therefore keep
 platform/profile support here without forcing a built-in P0/PowerMizer profile
-by default. The GPU Overclocking tab exposes an explicit `Aggressive P0 dGPU State`
-toggle for this machine; when applied, it refreshes the patched cTGP/DB sysfs
+by default. The GPU Overclocking tab exposes an explicit `P0 dGPU Force` toggle
+for this machine; when applied, it refreshes the patched cTGP/DB sysfs
 nodes and forces the ODM overboost/max-TDP path for users who need the extra dGPU
 headroom.

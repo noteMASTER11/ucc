@@ -1995,7 +1995,21 @@ bool UccDBusInterfaceAdaptor::ApplyNvidiaGpuOCProfile( const QString &profileJSO
        && doc.isObject() )
   {
     QJsonObject obj = doc.object();
-    if ( obj.contains( "nvidiaPowerCTRLProfile" ) && obj[ "nvidiaPowerCTRLProfile" ].isObject() )
+    bool profileJsonChanged = false;
+    const bool aggressiveP0State = obj.value( "aggressiveP0State" ).toBool( false );
+
+    if ( aggressiveP0State )
+    {
+      if ( !m_service->m_profileSettingsWorker->applyNVIDIAAggressivePowerState() )
+        return false;
+
+      if ( obj.contains( "powerLimitW" ) )
+      {
+        obj.remove( "powerLimitW" );
+        profileJsonChanged = true;
+      }
+    }
+    else if ( obj.contains( "nvidiaPowerCTRLProfile" ) && obj[ "nvidiaPowerCTRLProfile" ].isObject() )
     {
       QJsonObject nvidiaObj = obj[ "nvidiaPowerCTRLProfile" ].toObject();
       int ctgpOffset = nvidiaObj.value( "cTGPOffset" ).toInt( 0 );
@@ -2005,9 +2019,12 @@ bool UccDBusInterfaceAdaptor::ApplyNvidiaGpuOCProfile( const QString &profileJSO
       if ( obj.contains( "powerLimitW" ) )
       {
         obj.remove( "powerLimitW" );
-        profileJsonForNvml = QJsonDocument( obj ).toJson( QJsonDocument::Compact ).toStdString();
+        profileJsonChanged = true;
       }
     }
+
+    if ( profileJsonChanged )
+      profileJsonForNvml = QJsonDocument( obj ).toJson( QJsonDocument::Compact ).toStdString();
   }
 
   const bool result = m_service->m_nvidiaOCWorker->applyGpuOCProfile(
@@ -4377,7 +4394,21 @@ void UccDBusService::applyGpuOCFromProfile( const UccProfile &profile )
     if ( doc.isObject() )
     {
       QJsonObject obj = doc.object();
-      if ( obj.contains( "nvidiaPowerCTRLProfile" ) && obj[ "nvidiaPowerCTRLProfile" ].isObject() )
+      bool profileJsonChanged = false;
+      const bool aggressiveP0State = obj.value( "aggressiveP0State" ).toBool( false );
+
+      if ( aggressiveP0State )
+      {
+        std::cout << "[GpuOC] Applying aggressive P0 dGPU state from profile" << std::endl;
+        m_profileSettingsWorker->applyNVIDIAAggressivePowerState();
+
+        if ( obj.contains( "powerLimitW" ) )
+        {
+          obj.remove( "powerLimitW" );
+          profileJsonChanged = true;
+        }
+      }
+      else if ( obj.contains( "nvidiaPowerCTRLProfile" ) && obj[ "nvidiaPowerCTRLProfile" ].isObject() )
       {
         const int ctgpOffset = obj[ "nvidiaPowerCTRLProfile" ].toObject().value( "cTGPOffset" ).toInt( 0 );
         std::cout << "[GpuOC] Applying cTGP offset from profile: " << ctgpOffset << std::endl;
@@ -4386,9 +4417,12 @@ void UccDBusService::applyGpuOCFromProfile( const UccProfile &profile )
         if ( obj.contains( "powerLimitW" ) )
         {
           obj.remove( "powerLimitW" );
-          profileJsonForNvml = QJsonDocument( obj ).toJson( QJsonDocument::Compact ).toStdString();
+          profileJsonChanged = true;
         }
       }
+
+      if ( profileJsonChanged )
+        profileJsonForNvml = QJsonDocument( obj ).toJson( QJsonDocument::Compact ).toStdString();
     }
   }
 

@@ -135,6 +135,12 @@ public:
   bool applyNVIDIAPowerOffset( int32_t offset );
 
   /**
+   * @brief Apply the aggressive dGPU power state used for manual P0 forcing.
+   * @return true if at least the direct NVIDIA power-control path was applied.
+   */
+  bool applyNVIDIAAggressivePowerState();
+
+  /**
    * @brief Periodic validation — checks if an external process changed the cTGP offset
    *        and re-applies the profile value if needed.
    *
@@ -193,6 +199,7 @@ private:
     "/sys/devices/platform/tuxedo_nvidia_power_ctrl/tpp_offset";
   static inline const std::string NVIDIA_DB_OFFSET =
     "/sys/devices/platform/tuxedo_nvidia_power_ctrl/db_offset";
+  static constexpr int32_t NVIDIA_AGGRESSIVE_CTGP_OFFSET = 255;
   static constexpr int32_t NVIDIA_TPP_UNLOCK_OFFSET = 255;
   static constexpr int32_t NVIDIA_DB_DYNAMIC_BOOST_OFFSET = 25;
   static inline const std::string UNIWILL_OVERBOOST_PROFILE = "overboost";

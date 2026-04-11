@@ -708,6 +708,45 @@ bool ProfileSettingsWorker::applyNVIDIAPowerOffset( int32_t offset )
   return applyNVIDIACTGPOffset( offset );
 }
 
+bool ProfileSettingsWorker::applyNVIDIAAggressivePowerState()
+{
+  if ( !m_nvidiaPowerCTRLAvailable )
+    m_nvidiaPowerCTRLAvailable = checkNVIDIAAvailability();
+
+  if ( !m_nvidiaPowerCTRLAvailable )
+    return false;
+
+  queryNVIDIAPowerLimits();
+
+  const bool ctgpApplied = applyNVIDIACTGPOffset( NVIDIA_AGGRESSIVE_CTGP_OFFSET );
+
+  std::vector< std::string > availableProfiles;
+  if ( getAvailableProfilesViaAPI( availableProfiles )
+       && std::ranges::find( availableProfiles, UNIWILL_OVERBOOST_PROFILE ) != availableProfiles.end() )
+  {
+    if ( setProfileViaAPI( UNIWILL_OVERBOOST_PROFILE ) )
+      logLine( "ProfileSettingsWorker: Forced ODM profile to overboost for aggressive dGPU P0 state" );
+    else
+      logLine( "ProfileSettingsWorker: Failed to force ODM overboost profile for aggressive dGPU P0 state" );
+  }
+
+  const std::vector< TDPInfo > tdpInfo = getTDPInfo();
+  std::vector< uint32_t > maxTdpValues;
+  maxTdpValues.reserve( tdpInfo.size() );
+  for ( const auto &tdp : tdpInfo )
+    maxTdpValues.push_back( tdp.max );
+
+  if ( !maxTdpValues.empty() )
+  {
+    if ( setTDPValues( maxTdpValues ) )
+      logLine( "ProfileSettingsWorker: Forced maximum ODM TDPs for aggressive dGPU P0 state" );
+    else
+      logLine( "ProfileSettingsWorker: Failed to force maximum ODM TDPs for aggressive dGPU P0 state" );
+  }
+
+  return ctgpApplied;
+}
+
 bool ProfileSettingsWorker::applyNVIDIACTGPOffset( int32_t ctgpOffset )
 {
   if ( !m_cTGPAdjustmentSupported )

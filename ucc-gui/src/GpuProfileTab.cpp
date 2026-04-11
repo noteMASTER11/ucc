@@ -188,6 +188,13 @@ void GpuProfileTab::setupUI()
   powerLayout->addWidget( m_powerLimitValue );
   contentLayout->addWidget( powerGroup );
 
+  m_aggressiveP0Toggle = new QCheckBox( "Aggressive P0 dGPU State" );
+  m_aggressiveP0Toggle->setVisible( m_ocAvailable );
+  m_aggressiveP0Toggle->setToolTip(
+    "Forces the Mechrevo/TUXEDO NVIDIA power-control path to max cTGP, Dynamic Boost, "
+    "overboost, and maximum ODM TDP when this GPU OC profile is applied." );
+  contentLayout->addWidget( m_aggressiveP0Toggle );
+
   // === GPU LOCKED CLOCKS ===
   m_gpuLockedGroup = new QGroupBox( "GPU Core Locked Clocks" );
   m_gpuLockedGroup->setVisible( m_ocAvailable );
@@ -318,6 +325,9 @@ void GpuProfileTab::connectSignals()
       emit changed();
     } );
   }
+
+  if ( m_aggressiveP0Toggle )
+    connect( m_aggressiveP0Toggle, &QCheckBox::toggled, this, [this]( bool ) { emit changed(); } );
 }
 
 // ── Public helpers ──────────────────────────────────────────────────
@@ -394,6 +404,9 @@ void GpuProfileTab::updateButtonStates( bool uccdConnected )
     m_vramLockedGroup->setEnabled( controlsEnabled && m_lockedSupported );
   if ( m_powerLimitSlider )
     m_powerLimitSlider->setEnabled( controlsEnabled && m_powerMaxW > m_powerMinW );
+  if ( m_aggressiveP0Toggle )
+    m_aggressiveP0Toggle->setEnabled( controlsEnabled && m_uccdClient
+                                      && m_uccdClient->getNVIDIAPowerCTRLAvailable().value_or( false ) );
 
   // Allow renaming custom profiles
   if ( m_gpuProfileCombo && m_gpuProfileCombo->lineEdit() )
@@ -809,6 +822,9 @@ QString GpuProfileTab::buildProfileJSON() const
              << "ctgpOffset=" << ctgpOffset;
   }
 
+  if ( m_aggressiveP0Toggle && m_aggressiveP0Toggle->isChecked() )
+    root["aggressiveP0State"] = true;
+
   QJsonDocument doc( root );
   qDebug() << "[GPU-CTGP] buildProfileJSON payload:" << QString::fromUtf8( doc.toJson( QJsonDocument::Compact ) );
   return QString::fromUtf8( doc.toJson( QJsonDocument::Compact ) );
@@ -824,6 +840,13 @@ void GpuProfileTab::loadProfile( const QString &json )
     return;
 
   QJsonObject obj = doc.object();
+
+  if ( m_aggressiveP0Toggle )
+  {
+    m_aggressiveP0Toggle->blockSignals( true );
+    m_aggressiveP0Toggle->setChecked( obj.value( "aggressiveP0State" ).toBool( false ) );
+    m_aggressiveP0Toggle->blockSignals( false );
+  }
 
   // Load clock offsets
   for ( auto &grp : m_pstateGroups )
@@ -1027,6 +1050,9 @@ void GpuProfileTab::onResetClicked()
 
     if ( ok )
     {
+      if ( m_aggressiveP0Toggle )
+        m_aggressiveP0Toggle->setChecked( false );
+
       refreshOCState();
       if ( auto *mw = qobject_cast< QMainWindow * >( window() ) )
       {

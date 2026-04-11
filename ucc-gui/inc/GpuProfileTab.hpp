@@ -18,6 +18,7 @@
 #include <QWidget>
 #include <QComboBox>
 #include <QPushButton>
+#include <QCheckBox>
 #include <QSlider>
 #include <QSpinBox>
 #include <QLabel>
@@ -160,6 +161,7 @@ private:
   double m_powerMaxW = 0.0;
   double m_powerDefaultW = 0.0;
   bool m_nvmlPowerLimitSupported = false;
+  QCheckBox *m_aggressiveP0Toggle = nullptr;
 
   // Action buttons
   QPushButton *m_refreshButton = nullptr;

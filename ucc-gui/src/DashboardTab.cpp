@@ -28,6 +28,9 @@
 #include <QFrame>
 #include <QPalette>
 #include <QColor>
+#include <QJsonArray>
+#include <QJsonDocument>
+#include <QJsonObject>
 #include "CommonTypes.hpp"
 
 namespace
@@ -99,6 +102,8 @@ DashboardTab::DashboardTab( SystemMonitor *systemMonitor, ProfileManager *profil
     m_waterCoolerPollTimer->start(1000);
     updateWaterCoolerStatus();
   }
+
+  QTimer::singleShot( 0, this, [this]() { runHardwareCheck(); } );
 }
 
 void DashboardTab::setupUI()
@@ -157,6 +162,42 @@ void DashboardTab::setupUI()
   titleLayout->addWidget( titleLabel,                0, 0, Qt::AlignCenter );
   titleLayout->addWidget( m_waterCoolerEnableCheckBox, 0, 0, Qt::AlignRight | Qt::AlignVCenter );
   layout->addLayout( titleLayout );
+
+  QLabel *hardwareCheckHeader = new QLabel( "Hardware Check" );
+  hardwareCheckHeader->setStyleSheet( "font-size: 14px; font-weight: bold;" );
+  hardwareCheckHeader->setAlignment( Qt::AlignCenter );
+  layout->addWidget( hardwareCheckHeader );
+
+  QFrame *hardwareCheckPanel = new QFrame();
+  hardwareCheckPanel->setObjectName( "hardwareCheckPanel" );
+  hardwareCheckPanel->setStyleSheet(
+    QString("QFrame#hardwareCheckPanel { border: 1px solid %1; border-radius: 6px; background: transparent; }")
+      .arg(midHex) );
+  QGridLayout *hardwareCheckLayout = new QGridLayout( hardwareCheckPanel );
+  hardwareCheckLayout->setContentsMargins( 14, 10, 14, 10 );
+  hardwareCheckLayout->setHorizontalSpacing( 20 );
+  hardwareCheckLayout->setVerticalSpacing( 8 );
+
+  auto makeHardwareCheckLabel = [&]( const QString &text ) -> QLabel * {
+    QLabel *label = new QLabel( text + ": ..." );
+    label->setStyleSheet( QString("font-size: 12px; font-weight: bold; color: %1;").arg(textHex) );
+    return label;
+  };
+
+  m_hwCheckCpuLabel = makeHardwareCheckLabel( "CPU" );
+  m_hwCheckGpuLabel = makeHardwareCheckLabel( "GPU" );
+  m_hwCheckKeyboardBacklightLabel = makeHardwareCheckLabel( "Keyboard Backlight" );
+  m_hwCheckKeyboardColorLabel = makeHardwareCheckLabel( "Keyboard Color" );
+  m_hwCheckCpuTdpLabel = makeHardwareCheckLabel( "CPU TDP" );
+  m_hwCheckGpuTdpLabel = makeHardwareCheckLabel( "GPU TDP" );
+
+  hardwareCheckLayout->addWidget( m_hwCheckCpuLabel, 0, 0 );
+  hardwareCheckLayout->addWidget( m_hwCheckGpuLabel, 0, 1 );
+  hardwareCheckLayout->addWidget( m_hwCheckKeyboardBacklightLabel, 0, 2 );
+  hardwareCheckLayout->addWidget( m_hwCheckKeyboardColorLabel, 1, 0 );
+  hardwareCheckLayout->addWidget( m_hwCheckCpuTdpLabel, 1, 1 );
+  hardwareCheckLayout->addWidget( m_hwCheckGpuTdpLabel, 1, 2 );
+  layout->addWidget( hardwareCheckPanel );
 
   // Active Profile label (created but not shown; only used in status bar)
   m_activeProfileLabel = new QLabel( "Loading..." );
@@ -378,6 +419,96 @@ void DashboardTab::setupUI()
   }
 
   layout->addStretch();
+}
+
+void DashboardTab::setHardwareCheckStatus( QLabel *label, const QString &name, bool ok )
+{
+  if ( !label )
+    return;
+
+  const QString color = ok ? QStringLiteral( "#2e7d32" ) : QStringLiteral( "#d32f2f" );
+  const QString mark = ok ? QStringLiteral( "✓" ) : QStringLiteral( "✕" );
+  label->setText( QString( "%1: %2" ).arg( name, mark ) );
+  label->setStyleSheet( QString( "font-size: 12px; font-weight: bold; color: %1;" ).arg( color ) );
+}
+
+void DashboardTab::runHardwareCheck()
+{
+  auto *client = m_profileManager ? m_profileManager->getClient() : nullptr;
+  const bool connected = client && client->isConnected();
+
+  bool cpuOk = false;
+  bool gpuOk = false;
+  bool keyboardBacklightOk = false;
+  bool keyboardColorOk = false;
+  bool cpuTdpOk = false;
+  bool gpuTdpOk = false;
+
+  if ( connected )
+  {
+    if ( auto cores = client->getCpuCoreCount() )
+      cpuOk = *cores > 0;
+    if ( !cpuOk )
+      if ( auto freq = client->getCpuFrequency() )
+        cpuOk = *freq > 0;
+    if ( !cpuOk )
+      if ( auto temp = client->getCpuTemperature() )
+        cpuOk = *temp > 0;
+
+    if ( auto gpuName = client->getNvidiaOCState( 0 ) )
+    {
+      const QJsonDocument doc = QJsonDocument::fromJson( QByteArray::fromStdString( *gpuName ) );
+      if ( doc.isObject() )
+      {
+        const QJsonObject obj = doc.object();
+        gpuOk = !obj.value( "gpuName" ).toString().isEmpty();
+        gpuTdpOk = obj.value( "powerMaxW" ).toDouble( 0.0 ) > obj.value( "powerMinW" ).toDouble( 0.0 );
+      }
+    }
+
+    if ( !gpuOk )
+      gpuOk = !m_dGpuModel.isEmpty();
+    if ( !gpuOk )
+      if ( auto temp = client->getGpuTemperature() )
+        gpuOk = *temp > 0;
+    if ( !gpuOk )
+      if ( auto power = client->getGpuPower() )
+        gpuOk = *power >= 0.0;
+
+    if ( auto keyboardInfo = client->getKeyboardBacklightInfo() )
+    {
+      const QJsonDocument doc = QJsonDocument::fromJson( QByteArray::fromStdString( *keyboardInfo ) );
+      if ( doc.isObject() )
+      {
+        const QJsonObject caps = doc.object();
+        keyboardBacklightOk = caps.value( "zones" ).toInt( 0 ) > 0 &&
+                              caps.value( "maxBrightness" ).toInt( 0 ) > 0;
+        keyboardColorOk = keyboardBacklightOk &&
+                          caps.value( "maxRed" ).toInt( 0 ) > 0 &&
+                          caps.value( "maxGreen" ).toInt( 0 ) > 0 &&
+                          caps.value( "maxBlue" ).toInt( 0 ) > 0;
+      }
+    }
+
+    if ( auto tdpLimits = client->getODMPowerLimits() )
+      cpuTdpOk = !tdpLimits->empty();
+
+    if ( !gpuTdpOk )
+      gpuTdpOk = client->getNVIDIAPowerCTRLAvailable().value_or( false );
+    if ( !gpuTdpOk )
+    {
+      const int defaultLimit = client->getNVIDIAPowerCTRLDefaultPowerLimit().value_or( 0 );
+      const int maxLimit = client->getNVIDIAPowerCTRLMaxPowerLimit().value_or( 0 );
+      gpuTdpOk = defaultLimit > 0 && maxLimit >= defaultLimit;
+    }
+  }
+
+  setHardwareCheckStatus( m_hwCheckCpuLabel, "CPU", cpuOk );
+  setHardwareCheckStatus( m_hwCheckGpuLabel, "GPU", gpuOk );
+  setHardwareCheckStatus( m_hwCheckKeyboardBacklightLabel, "Keyboard Backlight", keyboardBacklightOk );
+  setHardwareCheckStatus( m_hwCheckKeyboardColorLabel, "Keyboard Color", keyboardColorOk );
+  setHardwareCheckStatus( m_hwCheckCpuTdpLabel, "CPU TDP", cpuTdpOk );
+  setHardwareCheckStatus( m_hwCheckGpuTdpLabel, "GPU TDP", gpuTdpOk );
 }
 
 void DashboardTab::connectSignals()

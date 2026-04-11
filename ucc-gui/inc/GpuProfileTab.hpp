@@ -159,6 +159,7 @@ private:
   double m_powerMinW = 0.0;
   double m_powerMaxW = 0.0;
   double m_powerDefaultW = 0.0;
+  bool m_nvmlPowerLimitSupported = false;
 
   // Action buttons
   QPushButton *m_refreshButton = nullptr;

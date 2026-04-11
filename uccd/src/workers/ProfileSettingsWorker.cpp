@@ -16,6 +16,7 @@
 #include "workers/ProfileSettingsWorker.hpp"
 #include "PowerSupplyController.hpp"
 #include <tuxedo_io_lib/tuxedo_io_api.hh>
+#include <algorithm>
 
 // =====================================================================
 //  Public methods
@@ -78,6 +79,44 @@ bool ProfileSettingsWorker::setTDPValues( const std::vector< uint32_t > &values 
   }
 
   return allSuccess;
+}
+
+bool ProfileSettingsWorker::setODMPowerLimits( const std::vector< int > &values )
+{
+  auto tdpInfo = getTDPInfo();
+  if ( tdpInfo.empty() )
+  {
+    logLine( "ProfileSettingsWorker: No TDP hardware available" );
+    m_setOdmPowerLimitsJSON( "[]" );
+    return false;
+  }
+
+  std::vector< uint32_t > clampedValues;
+  const size_t valueCount = std::min( values.size(), tdpInfo.size() );
+  clampedValues.reserve( valueCount );
+
+  for ( size_t i = 0; i < valueCount; ++i )
+  {
+    const int minValue = static_cast< int >( tdpInfo[ i ].min );
+    const int maxValue = static_cast< int >( tdpInfo[ i ].max );
+    const int clamped = std::clamp( values[ i ], minValue, maxValue );
+    clampedValues.push_back( static_cast< uint32_t >( clamped ) );
+  }
+
+  if ( clampedValues.empty() )
+  {
+    publishODMPowerLimitsJSON( tdpInfo );
+    return false;
+  }
+
+  const bool writeSuccess = setTDPValues( clampedValues );
+  tdpInfo = getTDPInfo();
+  publishODMPowerLimitsJSON( tdpInfo );
+
+  if ( !writeSuccess )
+    logLine( "ProfileSettingsWorker: Failed to write requested TDP values" );
+
+  return writeSuccess;
 }
 
 bool ProfileSettingsWorker::applyChargingProfile( const std::string &profileDescriptor ) noexcept
@@ -456,6 +495,14 @@ void ProfileSettingsWorker::applyODMPowerLimits()
     }
   }
 
+  for ( size_t i = 0; i < tdpInfo.size() and i < newTDPValues.size(); ++i )
+  {
+    newTDPValues[ i ] = static_cast< uint32_t >( std::clamp(
+      static_cast< int >( newTDPValues[ i ] ),
+      static_cast< int >( tdpInfo[ i ].min ),
+      static_cast< int >( tdpInfo[ i ].max ) ) );
+  }
+
   std::ostringstream logMessage;
   logMessage << "ProfileSettingsWorker: Set ODM TDPs [";
 
@@ -474,10 +521,7 @@ void ProfileSettingsWorker::applyODMPowerLimits()
 
   if ( writeSuccess )
   {
-    for ( size_t i = 0; i < tdpInfo.size() and i < newTDPValues.size(); ++i )
-    {
-      tdpInfo[ i ].current = newTDPValues[ i ];
-    }
+    tdpInfo = getTDPInfo();
   }
   else
   {

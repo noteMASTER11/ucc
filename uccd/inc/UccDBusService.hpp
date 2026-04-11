@@ -323,6 +323,7 @@ public slots:
   // odm methods
   QStringList ODMProfilesAvailable();
   QString ODMPowerLimitsJSON();
+  bool SetODMPowerLimitsJSON( const QString &limitsJSON );
 
   // keyboard backlight methods
   QString GetKeyboardBacklightCapabilitiesJSON();
@@ -363,6 +364,7 @@ public slots:
   int GetNVIDIAPowerCTRLDefaultPowerLimit();
   int GetNVIDIAPowerCTRLMaxPowerLimit();
   bool GetNVIDIAPowerCTRLAvailable();
+  int GetNVIDIAPowerOffset();
   bool SetNVIDIAPowerOffset( int offset );
   QString GetAvailableGovernors();
   QString GetAvailableEPPs();

@@ -566,9 +566,14 @@ std::optional< std::string > UccdClient::getFanTemperatures()
   return std::nullopt;
 }
 
-bool UccdClient::setODMPowerLimits( [[maybe_unused]] const std::vector< int > &limits )
+bool UccdClient::setODMPowerLimits( const std::vector< int > &limits )
 {
-  return false;
+  QJsonArray array;
+  for ( int limit : limits )
+    array.append( limit );
+
+  const QString json = QString::fromUtf8( QJsonDocument( array ).toJson( QJsonDocument::Compact ) );
+  return callMethod< bool, QString >( "SetODMPowerLimitsJSON", json ).value_or( false );
 }
 
 std::optional< std::vector< int > > UccdClient::getODMPowerLimits()
@@ -695,7 +700,10 @@ bool UccdClient::setNVIDIAPowerOffset( int offset )
 
 std::optional< int > UccdClient::getNVIDIAPowerOffset()
 {
-  // Read the cTGP offset from the currently active profile
+  if ( auto offset = callMethod< int >( "GetNVIDIAPowerOffset" ) )
+    return offset;
+
+  // Fallback for older daemons that do not expose the live cTGP getter.
   if ( auto json = getActiveProfileJSON() )
   {
     if ( QJsonDocument doc = QJsonDocument::fromJson( QString::fromStdString( *json ).toUtf8() ); doc.isObject() )

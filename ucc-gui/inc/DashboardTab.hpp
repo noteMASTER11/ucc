@@ -86,6 +86,8 @@ namespace ucc
     void setupUI();
     void connectSignals();
     void updateWaterCoolerStatus();
+    void runHardwareCheck();
+    void setHardwareCheckStatus( QLabel *label, const QString &name, bool ok );
     void switchGpuView( bool showIGpu );
     void updateGpuSwitchVisibility();
 
@@ -98,6 +100,12 @@ namespace ucc
     // Dashboard widgets
     QLabel *m_activeProfileLabel = nullptr;
     QLabel *m_waterCoolerStatusLabel = nullptr;
+    QLabel *m_hwCheckCpuLabel = nullptr;
+    QLabel *m_hwCheckGpuLabel = nullptr;
+    QLabel *m_hwCheckKeyboardBacklightLabel = nullptr;
+    QLabel *m_hwCheckKeyboardColorLabel = nullptr;
+    QLabel *m_hwCheckCpuTdpLabel = nullptr;
+    QLabel *m_hwCheckGpuTdpLabel = nullptr;
     QLabel *m_cpuTempLabel = nullptr;
     QLabel *m_cpuFrequencyLabel = nullptr;
     QLabel *m_gpuTempLabel = nullptr;

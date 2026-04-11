@@ -99,6 +99,8 @@ public:
   //  ODM Power Limit API  (was ODMPowerLimitWorker)
   // =====================================================================
 
+  bool setODMPowerLimits( const std::vector< int > &values );
+
   void reapplyProfile()
   {
     logLine( "ProfileSettingsWorker: reapplyProfile() called" );

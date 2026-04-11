@@ -192,7 +192,7 @@ void GpuProfileTab::setupUI()
   m_gpuLockedGroup = new QGroupBox( "GPU Core Locked Clocks" );
   m_gpuLockedGroup->setVisible( m_ocAvailable );
   m_gpuLockedGroup->setCheckable( true );
-  m_gpuLockedGroup->setChecked( true );
+  m_gpuLockedGroup->setChecked( false );
   QVBoxLayout *gpuLockedLayout = new QVBoxLayout( m_gpuLockedGroup );
 
   QHBoxLayout *gpuLockedRow = new QHBoxLayout();
@@ -216,7 +216,7 @@ void GpuProfileTab::setupUI()
   m_vramLockedGroup = new QGroupBox( "VRAM Locked Clocks" );
   m_vramLockedGroup->setVisible( m_ocAvailable );
   m_vramLockedGroup->setCheckable( true );
-  m_vramLockedGroup->setChecked( true );
+  m_vramLockedGroup->setChecked( false );
   QVBoxLayout *vramLockedLayout = new QVBoxLayout( m_vramLockedGroup );
 
   QHBoxLayout *vramLockedRow = new QHBoxLayout();
@@ -380,19 +380,20 @@ void GpuProfileTab::updateButtonStates( bool uccdConnected )
   if ( m_removeButton )  m_removeButton->setEnabled( hasSelection && !isBuiltin );
   if ( m_resetButton )   m_resetButton->setEnabled( uccdConnected && m_ocAvailable );
 
-  // Built-in GPU profiles are immutable: lock all editable controls.
-  const bool profileEditable = hasSelection && !isBuiltin;
+  // Built-in GPU profiles are immutable on disk, but their values can still be
+  // adjusted and applied temporarily to the hardware.
+  const bool controlsEnabled = hasSelection && uccdConnected && m_ocAvailable;
   for ( auto &grp : m_pstateGroups )
   {
     if ( grp.groupBox )
-      grp.groupBox->setEnabled( profileEditable && m_offsetsSupported );
+      grp.groupBox->setEnabled( controlsEnabled && m_offsetsSupported );
   }
   if ( m_gpuLockedGroup )
-    m_gpuLockedGroup->setEnabled( profileEditable && m_lockedSupported );
+    m_gpuLockedGroup->setEnabled( controlsEnabled && m_lockedSupported );
   if ( m_vramLockedGroup )
-    m_vramLockedGroup->setEnabled( profileEditable && m_lockedSupported );
+    m_vramLockedGroup->setEnabled( controlsEnabled && m_lockedSupported );
   if ( m_powerLimitSlider )
-    m_powerLimitSlider->setEnabled( profileEditable );
+    m_powerLimitSlider->setEnabled( controlsEnabled && m_powerMaxW > m_powerMinW );
 
   // Allow renaming custom profiles
   if ( m_gpuProfileCombo && m_gpuProfileCombo->lineEdit() )
@@ -442,6 +443,7 @@ void GpuProfileTab::refreshOCState()
   }
 
   int currentPowerFromState = static_cast< int >( std::round( state["powerLimitW"].toDouble( 0.0 ) ) );
+  m_nvmlPowerLimitSupported = currentPowerFromState > 0;
 
   qDebug() << "[GPU-CTGP] refresh inputs"
            << "powerMinW=" << m_powerMinW
@@ -790,16 +792,19 @@ QString GpuProfileTab::buildProfileJSON() const
     root["vramLockedClocks"] = vramLocked;
   }
 
-  // cTGP profile payload (same field as Profiles page)
+  // GPU power-limit payload: NVML powerLimitW plus the Tuxedo cTGP offset when available.
   if ( m_powerLimitSlider )
   {
+    const int targetPowerW = m_powerLimitSlider->value();
     const int ctgpOffset = m_powerLimitSlider->value() - static_cast< int >( std::round( m_powerDefaultW ) );
     QJsonObject nvidiaPowerObj;
     nvidiaPowerObj["cTGPOffset"] = ctgpOffset;
+    if ( m_nvmlPowerLimitSupported )
+      root["powerLimitW"] = targetPowerW;
     root["nvidiaPowerCTRLProfile"] = nvidiaPowerObj;
 
     qDebug() << "[GPU-CTGP] buildProfileJSON"
-             << "sliderValueW=" << m_powerLimitSlider->value()
+             << "sliderValueW=" << targetPowerW
              << "baselineDefaultW=" << m_powerDefaultW
              << "ctgpOffset=" << ctgpOffset;
   }
@@ -899,12 +904,26 @@ void GpuProfileTab::loadProfile( const QString &json )
     m_vramLockedMaxSlider->blockSignals( false );
   }
 
-  // Load cTGP offset profile data (preferred)
-  if ( obj.contains( "nvidiaPowerCTRLProfile" ) && obj["nvidiaPowerCTRLProfile"].isObject() && m_powerLimitSlider )
+  if ( m_powerLimitSlider )
   {
-    QJsonObject gpuObj = obj["nvidiaPowerCTRLProfile"].toObject();
-    int offset = gpuObj["cTGPOffset"].toInt( 0 );
-    int valueW = static_cast< int >( std::round( m_powerDefaultW ) ) + offset;
+    int valueW = m_powerLimitSlider->value();
+    int offset = valueW - static_cast< int >( std::round( m_powerDefaultW ) );
+
+    if ( obj.contains( "powerLimitW" ) )
+    {
+      valueW = static_cast< int >( std::round( obj["powerLimitW"].toDouble( valueW ) ) );
+      offset = valueW - static_cast< int >( std::round( m_powerDefaultW ) );
+    }
+    else if ( obj.contains( "nvidiaPowerCTRLProfile" ) && obj["nvidiaPowerCTRLProfile"].isObject() )
+    {
+      QJsonObject gpuObj = obj["nvidiaPowerCTRLProfile"].toObject();
+      offset = gpuObj["cTGPOffset"].toInt( 0 );
+      valueW = static_cast< int >( std::round( m_powerDefaultW ) ) + offset;
+    }
+    else
+    {
+      return;
+    }
 
     qDebug() << "[GPU-CTGP] loadProfile"
              << "baselineDefaultW=" << m_powerDefaultW

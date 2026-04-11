@@ -2134,9 +2134,14 @@ void MainWindow::updateProfileEditingWidgets( bool isCustom )
   if ( m_profileKeyboardProfileCombo ) m_profileKeyboardProfileCombo->setEnabled( isCustom );
 
   // ODM Power controls
-  if ( m_odmPowerLimit1Slider ) m_odmPowerLimit1Slider->setEnabled( isCustom );
-  if ( m_odmPowerLimit2Slider ) m_odmPowerLimit2Slider->setEnabled( isCustom );
-  if ( m_odmPowerLimit3Slider ) m_odmPowerLimit3Slider->setEnabled( isCustom );
+  // Built-in profiles are immutable on disk, but TDP values can still be
+  // adjusted and applied temporarily to the active hardware.
+  const std::vector< int > tdpLimits = m_profileManager
+    ? m_profileManager->getHardwarePowerLimits()
+    : std::vector< int >{};
+  if ( m_odmPowerLimit1Slider ) m_odmPowerLimit1Slider->setEnabled( tdpLimits.size() > 0 );
+  if ( m_odmPowerLimit2Slider ) m_odmPowerLimit2Slider->setEnabled( tdpLimits.size() > 1 );
+  if ( m_odmPowerLimit3Slider ) m_odmPowerLimit3Slider->setEnabled( tdpLimits.size() > 2 );
 
   // Charging profile
   if ( m_profileChargingProfileCombo ) m_profileChargingProfileCombo->setEnabled( isCustom );

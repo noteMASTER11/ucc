@@ -1381,6 +1381,34 @@ QString UccDBusInterfaceAdaptor::ODMPowerLimitsJSON()
   return QString::fromStdString( m_data.odmPowerLimitsJSON );
 }
 
+bool UccDBusInterfaceAdaptor::SetODMPowerLimitsJSON( const QString &limitsJSON )
+{
+  if ( !checkAuth( PolkitAuthority::ACTION_MANAGE_HARDWARE ) ) return false;
+  if ( !m_service->m_profileSettingsWorker ) return false;
+
+  const QJsonDocument doc = QJsonDocument::fromJson( limitsJSON.toUtf8() );
+  if ( !doc.isArray() )
+    return false;
+
+  std::vector< int > values;
+  const QJsonArray array = doc.array();
+  values.reserve( static_cast< size_t >( array.size() ) );
+
+  for ( const QJsonValue &value : array )
+  {
+    if ( !value.isDouble() )
+      return false;
+    values.push_back( value.toInt() );
+  }
+
+  if ( !m_service->m_profileSettingsWorker->setODMPowerLimits( values ) )
+    return false;
+
+  // Refresh cached capability/current values after a direct TDP write.
+  m_service->readHardwareCapabilities();
+  return true;
+}
+
 // keyboard backlight methods
 
 QString UccDBusInterfaceAdaptor::GetKeyboardBacklightCapabilitiesJSON()
@@ -1638,6 +1666,11 @@ int UccDBusInterfaceAdaptor::GetNVIDIAPowerCTRLMaxPowerLimit()
 bool UccDBusInterfaceAdaptor::GetNVIDIAPowerCTRLAvailable()
 {
   return m_data.nvidiaPowerCTRLAvailable;
+}
+
+int UccDBusInterfaceAdaptor::GetNVIDIAPowerOffset()
+{
+  return m_service ? m_service->readCurrentCTGPOffset() : 0;
 }
 
 bool UccDBusInterfaceAdaptor::SetNVIDIAPowerOffset( int offset )
@@ -1952,30 +1985,41 @@ bool UccDBusInterfaceAdaptor::ApplyNvidiaGpuOCProfile( const QString &profileJSO
   if ( !m_service || !m_service->m_nvidiaOCWorker ) return false;
 
   const std::string profileJsonStd = profileJSON.toStdString();
+  std::string profileJsonForNvml = profileJsonStd;
+  QJsonDocument doc = QJsonDocument::fromJson( QByteArray::fromStdString( profileJsonStd ) );
+
+  // Apply cTGP through tuxedo_nvidia_power_ctrl before NVML. On some laptops
+  // NVML exposes power constraints but rejects nvmlDeviceSetPowerManagementLimit
+  // with NVML_ERROR_NOT_SUPPORTED, while the cTGP sysfs path is the native one.
+  if ( m_service->m_profileSettingsWorker && m_service->m_dbusData.nvidiaPowerCTRLAvailable.load()
+       && doc.isObject() )
+  {
+    QJsonObject obj = doc.object();
+    if ( obj.contains( "nvidiaPowerCTRLProfile" ) && obj[ "nvidiaPowerCTRLProfile" ].isObject() )
+    {
+      QJsonObject nvidiaObj = obj[ "nvidiaPowerCTRLProfile" ].toObject();
+      int ctgpOffset = nvidiaObj.value( "cTGPOffset" ).toInt( 0 );
+      if ( !m_service->m_profileSettingsWorker->applyNVIDIAPowerOffset( ctgpOffset ) )
+        return false;
+
+      if ( obj.contains( "powerLimitW" ) )
+      {
+        obj.remove( "powerLimitW" );
+        profileJsonForNvml = QJsonDocument( obj ).toJson( QJsonDocument::Compact ).toStdString();
+      }
+    }
+  }
+
   const bool result = m_service->m_nvidiaOCWorker->applyGpuOCProfile(
-      profileJsonStd, static_cast< unsigned int >( deviceIndex ) );
+      profileJsonForNvml, static_cast< unsigned int >( deviceIndex ) );
 
   if ( !result )
     return false;
 
-  // Apply cTGP offset from GPU profile payload (GPU-profile path only)
-  if ( m_service->m_profileSettingsWorker && m_service->m_dbusData.nvidiaPowerCTRLAvailable.load() )
+  if ( doc.isObject() )
   {
-    QJsonDocument doc = QJsonDocument::fromJson( QByteArray::fromStdString( profileJsonStd ) );
-    if ( doc.isObject() )
-    {
-      QJsonObject obj = doc.object();
-      if ( obj.contains( "nvidiaPowerCTRLProfile" ) && obj[ "nvidiaPowerCTRLProfile" ].isObject() )
-      {
-        QJsonObject nvidiaObj = obj[ "nvidiaPowerCTRLProfile" ].toObject();
-        int ctgpOffset = nvidiaObj.value( "cTGPOffset" ).toInt( 0 );
-        m_service->m_profileSettingsWorker->applyNVIDIAPowerOffset( ctgpOffset );
-      }
-
-      // Update active profile's embedded GPU OC data for readback
-      m_service->m_activeProfile.gpuOCProfileData = profileJsonStd;
-      m_service->updateDBusActiveProfileData();
-    }
+    m_service->m_activeProfile.gpuOCProfileData = profileJsonForNvml;
+    m_service->updateDBusActiveProfileData();
   }
 
   auto extractStr = []( const std::string &json, const std::string &key ) -> std::string {
@@ -4318,6 +4362,7 @@ void UccDBusService::applyGpuOCFromProfile( const UccProfile &profile )
     return;
 
   // Extract and apply cTGP offset from embedded GPU profile data
+  std::string profileJsonForNvml = profile.gpuOCProfileData;
   if ( m_profileSettingsWorker && m_dbusData.nvidiaPowerCTRLAvailable.load() )
   {
     QJsonDocument doc = QJsonDocument::fromJson( QByteArray::fromStdString( profile.gpuOCProfileData ) );
@@ -4329,6 +4374,12 @@ void UccDBusService::applyGpuOCFromProfile( const UccProfile &profile )
         const int ctgpOffset = obj[ "nvidiaPowerCTRLProfile" ].toObject().value( "cTGPOffset" ).toInt( 0 );
         std::cout << "[GpuOC] Applying cTGP offset from profile: " << ctgpOffset << std::endl;
         m_profileSettingsWorker->applyNVIDIAPowerOffset( ctgpOffset );
+
+        if ( obj.contains( "powerLimitW" ) )
+        {
+          obj.remove( "powerLimitW" );
+          profileJsonForNvml = QJsonDocument( obj ).toJson( QJsonDocument::Compact ).toStdString();
+        }
       }
     }
   }
@@ -4338,7 +4389,7 @@ void UccDBusService::applyGpuOCFromProfile( const UccProfile &profile )
   {
     std::cout << "[GpuOc] Applying embedded GPU OC profile data from profile '"
               << profile.name << "'" << std::endl;
-    if ( !m_nvidiaOCWorker->applyGpuOCProfile( profile.gpuOCProfileData, 0 ) )
+    if ( !m_nvidiaOCWorker->applyGpuOCProfile( profileJsonForNvml, 0 ) )
       std::cerr << "[GpuOC] Failed to apply GPU OC profile data" << std::endl;
   }
 }

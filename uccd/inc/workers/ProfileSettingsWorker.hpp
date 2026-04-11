@@ -185,6 +185,14 @@ private:
 
   static inline const std::string NVIDIA_CTGP_OFFSET =
     "/sys/devices/platform/tuxedo_nvidia_power_ctrl/ctgp_offset";
+  static inline const std::string NVIDIA_CTGP_ENABLE =
+    "/sys/devices/platform/tuxedo_nvidia_power_ctrl/ctgp_enable";
+  static inline const std::string NVIDIA_DB_ENABLE =
+    "/sys/devices/platform/tuxedo_nvidia_power_ctrl/db_enable";
+  static inline const std::string NVIDIA_TPP_OFFSET =
+    "/sys/devices/platform/tuxedo_nvidia_power_ctrl/tpp_offset";
+  static inline const std::string NVIDIA_DB_OFFSET =
+    "/sys/devices/platform/tuxedo_nvidia_power_ctrl/db_offset";
 
   void detectODMProfileType();
   std::vector< std::string > readPlatformProfileChoices( const std::string &path );
@@ -277,6 +285,8 @@ private:
 
   void initNVIDIAPowerCTRL();
   bool applyNVIDIACTGPOffset( int32_t offset );
+  bool writeNVIDIAPowerControlNodeIfAvailable( const std::string &path, int32_t value );
+  bool forceNVIDIAPowerControlUnlocked( bool verbose = true );
   void queryNVIDIAPowerLimits();
 
   bool checkNVIDIAAvailability() const

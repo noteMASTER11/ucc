@@ -245,6 +245,7 @@ void ProfileSettingsWorker::validateNVIDIACTGPOffset()
     file.close();
 
     int32_t expectedOffset = m_lastAppliedNVIDIAOffset;
+    forceNVIDIAPowerControlUnlocked( false );
 
     if ( currentValue != expectedOffset )
     {
@@ -684,6 +685,8 @@ bool ProfileSettingsWorker::applyNVIDIACTGPOffset( int32_t ctgpOffset )
   const int32_t maxAdjustment = m_nvidiaPowerCTRLMaxPowerLimit - m_nvidiaPowerCTRLDefaultPowerLimit;
   ctgpOffset = std::clamp( ctgpOffset, -maxAdjustment, maxAdjustment );
 
+  const bool forcedBeforeWrite = forceNVIDIAPowerControlUnlocked();
+
   std::ofstream file( NVIDIA_CTGP_OFFSET );
   if ( !file.is_open() )
   {
@@ -703,6 +706,18 @@ bool ProfileSettingsWorker::applyNVIDIACTGPOffset( int32_t ctgpOffset )
   }
 
   file.close();
+
+  // Some EC firmware revisions only latch cTGP after the related control bits
+  // are refreshed, so repeat the unlock sequence and write the target again.
+  const bool forcedAfterWrite = forceNVIDIAPowerControlUnlocked();
+  {
+    std::ofstream retryFile( NVIDIA_CTGP_OFFSET );
+    if ( retryFile.is_open() )
+    {
+      retryFile << ctgpOffset;
+      retryFile.flush();
+    }
+  }
 
   // Verify the write by reading back
   std::ifstream verifyFile( NVIDIA_CTGP_OFFSET );
@@ -727,10 +742,63 @@ bool ProfileSettingsWorker::applyNVIDIACTGPOffset( int32_t ctgpOffset )
       std::cout << "[NVIDIAPowerCTRL] Applied cTGP offset (rounded by hardware): wrote "
                 << ctgpOffset << ", hardware accepted " << verifiedValue << std::endl;
     }
+    if ( ctgpOffset != 0 && !forcedBeforeWrite && !forcedAfterWrite )
+    {
+      std::cout << "[NVIDIAPowerCTRL] Extra power-control nodes are unavailable; rebuild the "
+                   "patched tuxedo_nb02_nvidia_power_ctrl module to force cTGP/DB enable bits"
+                << std::endl;
+    }
     return true;
   }
 
   return false;
+}
+
+bool ProfileSettingsWorker::writeNVIDIAPowerControlNodeIfAvailable(
+  const std::string &path, int32_t value )
+{
+  if ( !fileExists( path ) )
+    return false;
+
+  std::ofstream file( path );
+  if ( !file.is_open() )
+  {
+    std::cerr << "[NVIDIAPowerCTRL] Failed to open " << path << " for writing" << std::endl;
+    return false;
+  }
+
+  file << value;
+  file.flush();
+
+  if ( !file.good() )
+  {
+    std::cerr << "[NVIDIAPowerCTRL] Failed to write " << value << " to " << path << std::endl;
+    return false;
+  }
+
+  return true;
+}
+
+bool ProfileSettingsWorker::forceNVIDIAPowerControlUnlocked( bool verbose )
+{
+  // These nodes are available with the Mechrevo/TUXEDO driver patch. Older
+  // modules expose only ctgp_offset, making the calls harmless no-ops.
+  const bool ctgpEnabled = writeNVIDIAPowerControlNodeIfAvailable( NVIDIA_CTGP_ENABLE, 1 );
+  const bool dbEnabled = writeNVIDIAPowerControlNodeIfAvailable( NVIDIA_DB_ENABLE, 1 );
+  const bool tppUnlocked = writeNVIDIAPowerControlNodeIfAvailable( NVIDIA_TPP_OFFSET, 255 );
+  const bool dbOffsetSet = writeNVIDIAPowerControlNodeIfAvailable( NVIDIA_DB_OFFSET, 25 );
+
+  if ( verbose && ( ctgpEnabled || dbEnabled || tppUnlocked || dbOffsetSet ) )
+  {
+    std::cout << "[NVIDIAPowerCTRL] Forced power control state:"
+              << " ctgp_enable=" << ( ctgpEnabled ? "ok" : "n/a" )
+              << " db_enable=" << ( dbEnabled ? "ok" : "n/a" )
+              << " tpp_offset=" << ( tppUnlocked ? "ok" : "n/a" )
+              << " db_offset=" << ( dbOffsetSet ? "ok" : "n/a" )
+              << std::endl;
+  }
+
+  return ctgpEnabled || dbEnabled || tppUnlocked || dbOffsetSet;
 }
 
 void ProfileSettingsWorker::queryNVIDIAPowerLimits()

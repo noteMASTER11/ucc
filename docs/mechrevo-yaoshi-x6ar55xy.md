@@ -13,6 +13,12 @@ This machine uses the same Uniwill/TUXEDO driver path as the X6AR55xU family,
 but `tuxedo-drivers 4.21.0` rejects the Mechrevo DMI strings and does not attach
 the TDP definitions without an extra board match.
 
+The patch also exposes the NVIDIA Dynamic Boost/cTGP sysfs controls that are
+hidden behind `#ifdef DEBUG` in `tuxedo_nb02_nvidia_power_ctrl`. Without those
+extra nodes, UCC can write `ctgp_offset`, but cannot force-refresh
+`ctgp_enable`, `db_enable`, `tpp_offset`, and `db_offset` when the EC/NVIDIA
+driver keeps the active dGPU power limit pinned to the default value.
+
 Apply the driver patch from this directory before rebuilding DKMS:
 
 ```bash
@@ -23,4 +29,13 @@ sudo dkms install --force -m tuxedo-drivers -v 4.21.0 -k "$(uname -r)"
 ```
 
 After reloading modules, UCC should report the Uniwill interface, model 26, three
-ODM power limits, two fans, and 126 RGB keyboard backlight zones.
+ODM power limits, two fans, 126 RGB keyboard backlight zones, and the following
+GPU power-control nodes:
+
+```bash
+/sys/devices/platform/tuxedo_nvidia_power_ctrl/ctgp_offset
+/sys/devices/platform/tuxedo_nvidia_power_ctrl/ctgp_enable
+/sys/devices/platform/tuxedo_nvidia_power_ctrl/db_enable
+/sys/devices/platform/tuxedo_nvidia_power_ctrl/tpp_offset
+/sys/devices/platform/tuxedo_nvidia_power_ctrl/db_offset
+```

@@ -41,6 +41,17 @@ diff -ruN a/tuxedo_io/tuxedo_io.c b/tuxedo_io/tuxedo_io.c
  		tdp_min_defs = tdp_min_x6ar55xu;
  		tdp_max_defs = tdp_max_x6ar55xu;
  	} else if (dmi_match(DMI_BOARD_NAME, "X5AR45xS")) {
+diff -ruN a/tuxedo_nb02_nvidia_power_ctrl/tuxedo_nb02_nvidia_power_ctrl.c b/tuxedo_nb02_nvidia_power_ctrl/tuxedo_nb02_nvidia_power_ctrl.c
+--- a/tuxedo_nb02_nvidia_power_ctrl/tuxedo_nb02_nvidia_power_ctrl.c	2026-02-24 20:27:00.000000000 +0400
++++ b/tuxedo_nb02_nvidia_power_ctrl/tuxedo_nb02_nvidia_power_ctrl.c	2026-04-11 04:12:00.000000000 +0400
+@@ -62 +61,0 @@
+-#ifdef DEBUG
+@@ -238 +236,0 @@
+-#endif // DEBUG
+@@ -274 +271,0 @@
+-#ifdef DEBUG
+@@ -290 +286,0 @@
+-#endif // DEBUG
 diff -ruN a/uniwill_keyboard.h b/uniwill_keyboard.h
 --- a/uniwill_keyboard.h	2026-02-24 20:27:00.000000000 +0400
 +++ b/uniwill_keyboard.h	2026-04-11 03:23:41.582418860 +0400

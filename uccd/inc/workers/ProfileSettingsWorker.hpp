@@ -193,9 +193,8 @@ private:
     "/sys/devices/platform/tuxedo_nvidia_power_ctrl/tpp_offset";
   static inline const std::string NVIDIA_DB_OFFSET =
     "/sys/devices/platform/tuxedo_nvidia_power_ctrl/db_offset";
-  static constexpr int32_t NVIDIA_AGGRESSIVE_CTGP_OFFSET = 255;
-  static constexpr int32_t NVIDIA_AGGRESSIVE_TPP_OFFSET = 255;
-  static constexpr int32_t NVIDIA_AGGRESSIVE_DB_OFFSET = 25;
+  static constexpr int32_t NVIDIA_TPP_UNLOCK_OFFSET = 255;
+  static constexpr int32_t NVIDIA_DB_DYNAMIC_BOOST_OFFSET = 25;
   static inline const std::string UNIWILL_OVERBOOST_PROFILE = "overboost";
 
   void detectODMProfileType();
@@ -266,6 +265,7 @@ private:
   // ----- NVIDIA Power Control internals -----
 
   int32_t m_lastAppliedNVIDIAOffset = 0;
+  bool m_hasAppliedNVIDIAOffset = false;
   std::atomic< int32_t > &m_nvidiaPowerCTRLDefaultPowerLimit;
   std::atomic< int32_t > &m_nvidiaPowerCTRLMaxPowerLimit;
   std::atomic< bool > &m_nvidiaPowerCTRLAvailable;

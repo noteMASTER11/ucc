@@ -26,6 +26,7 @@ enum class LaptopManufacturer
 {
   TUXEDO,
   XMG,
+  MECHREVO,
   Uniwill,       // generic Uniwill (not rebranded or unknown brand)
   Unknown
 };

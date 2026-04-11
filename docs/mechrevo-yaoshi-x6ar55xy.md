@@ -18,9 +18,8 @@ hidden behind `#ifdef DEBUG` in `tuxedo_nb02_nvidia_power_ctrl`. Without those
 extra nodes, UCC can write `ctgp_offset`, but cannot force-refresh
 `ctgp_enable`, `db_enable`, `tpp_offset`, and `db_offset` when the EC/NVIDIA
 driver keeps the active dGPU power limit pinned to the default value. The patch
-also changes the module init value for `ctgp_offset` from `0` to raw `255` so
-the EC boots into the most aggressive exposed Dynamic Boost/cTGP state before
-UCC starts enforcing the same state.
+also mirrors `ctgp_offset` into the ACPI/NVPCF `CTWA` EC register so NVPCF sees
+the same value UCC writes through the cTGP sysfs node.
 
 Apply the driver patch from this directory before rebuilding DKMS:
 
@@ -43,7 +42,14 @@ GPU power-control nodes:
 /sys/devices/platform/tuxedo_nvidia_power_ctrl/db_offset
 ```
 
-UCC's Mechrevo aggressive dGPU path now keeps `ctgp_offset=255`, `ctgp_enable=1`,
-`db_enable=1`, `tpp_offset=255`, `db_offset=25`, forces the Uniwill `overboost`
-profile, and writes the maximum reported ODM TDP values while NVIDIA cTGP is
-available.
+With the cTGP controls available, UCC can apply profile-driven GPU power
+settings through `ctgp_offset`, `ctgp_enable`, `db_enable`, `tpp_offset`, and
+`db_offset`.
+
+For the RTX 5080 Laptop GPU, P-State and the driver's active power limit are
+handled by the NVIDIA driver stack rather than UCC GPU OC profiles. Driver
+`580.126.09` kept the GPU at `P4` and the active power limit at 80 W under
+`clpeak`. After installing driver `595.58.03` and enabling `nvidia-powerd`, the
+driver reported `P0` and a 175 W current power limit. UCC should therefore keep
+platform/profile support here, but should not force a built-in P0/PowerMizer
+profile for this machine.

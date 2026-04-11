@@ -368,6 +368,9 @@ LaptopManufacturer classifyManufacturer( const std::string &sysVendor,
        containsCI( sysVendor, "XMG" ) || containsCI( boardVendor, "XMG" ) )
     return LaptopManufacturer::XMG;
 
+  if ( containsCI( sysVendor, "MECHREVO" ) || containsCI( boardVendor, "MECHREVO" ) )
+    return LaptopManufacturer::MECHREVO;
+
   if ( containsCI( sysVendor, "Uniwill" ) || containsCI( boardVendor, "Uniwill" ) ||
        containsCI( sysVendor, "UNIWILL" ) || containsCI( boardVendor, "UNIWILL" ) )
     return LaptopManufacturer::Uniwill;
@@ -381,6 +384,7 @@ std::string manufacturerToString( LaptopManufacturer m )
   {
     case LaptopManufacturer::TUXEDO:  return "TUXEDO";
     case LaptopManufacturer::XMG:     return "XMG";
+    case LaptopManufacturer::MECHREVO: return "MECHREVO";
     case LaptopManufacturer::Uniwill: return "Uniwill";
     default:                          return "Unknown";
   }

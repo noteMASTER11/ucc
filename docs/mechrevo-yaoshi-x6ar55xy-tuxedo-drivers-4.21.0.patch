@@ -46,15 +46,27 @@ diff -ruN a/tuxedo_nb02_nvidia_power_ctrl/tuxedo_nb02_nvidia_power_ctrl.c b/tuxe
 +++ b/tuxedo_nb02_nvidia_power_ctrl/tuxedo_nb02_nvidia_power_ctrl.c	2026-04-11 04:12:00.000000000 +0400
 @@ -62 +61,0 @@
 -#ifdef DEBUG
+@@ -57,0 +56,4 @@
++	result = uniwill_write_ec_ram(UW_EC_REG_CTGP_DB_NVPCF_CTWA, data);
++	if (result < 0)
++		return result;
++
 @@ -238 +236,0 @@
 -#endif // DEBUG
-@@ -249 +247 @@
--	result = uniwill_write_ec_ram(UW_EC_REG_CTGP_DB_CTGP_OFFSET, 0);
-+	result = uniwill_write_ec_ram(UW_EC_REG_CTGP_DB_CTGP_OFFSET, 255);
+@@ -250,0 +248,4 @@
++	if (result < 0)
++		return result;
++
++	result = uniwill_write_ec_ram(UW_EC_REG_CTGP_DB_NVPCF_CTWA, 0);
 @@ -274 +271,0 @@
 -#ifdef DEBUG
 @@ -290 +286,0 @@
 -#endif // DEBUG
+diff -ruN a/uniwill_interfaces.h b/uniwill_interfaces.h
+--- a/uniwill_interfaces.h	2026-02-24 20:27:00.000000000 +0400
++++ b/uniwill_interfaces.h	2026-04-11 05:16:00.000000000 +0400
+@@ -99,0 +100 @@
++#define UW_EC_REG_CTGP_DB_NVPCF_CTWA			0x0788
 diff -ruN a/uniwill_keyboard.h b/uniwill_keyboard.h
 --- a/uniwill_keyboard.h	2026-02-24 20:27:00.000000000 +0400
 +++ b/uniwill_keyboard.h	2026-04-11 03:23:41.582418860 +0400

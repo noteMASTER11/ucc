@@ -3951,6 +3951,8 @@ std::optional< UniwillDeviceID > UccDBusService::identifyDevice()
   // read dmi information from sysfs
   const std::string dmiBasePath = "/sys/class/dmi/id";
   const std::string productSKU = SysfsNode< std::string >( dmiBasePath + "/product_sku" ).read().value_or( "" );
+  const std::string sysVendor = SysfsNode< std::string >( dmiBasePath + "/sys_vendor" ).read().value_or( "" );
+  const std::string productName = SysfsNode< std::string >( dmiBasePath + "/product_name" ).read().value_or( "" );
   const std::string boardName = SysfsNode< std::string >( dmiBasePath + "/board_name" ).read().value_or( "" );
 
   // get module info from tuxedo_io
@@ -4001,6 +4003,12 @@ std::optional< UniwillDeviceID > UccDBusService::identifyDevice()
   if ( auto skuIt = dmiSKUDeviceMap.find( productSKU ); skuIt != dmiSKUDeviceMap.end() )
   {
     return skuIt->second;
+  }
+
+  if ( sysVendor == "MECHREVO" && productName == "YAOSHI Series"
+       && boardName == "YAOSHI Series-X6AR55xY" )
+  {
+    return UniwillDeviceID::STELLARIS16I07;
   }
 
   // check uwid (univ wmi interface) device mapping

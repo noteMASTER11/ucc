@@ -238,8 +238,8 @@ void ProfileSettingsWorker::validateNVIDIACTGPOffset()
   if ( !m_nvidiaPowerCTRLAvailable )
     return;
 
-  if ( m_cTGPAdjustmentSupported && m_lastAppliedNVIDIAOffset != NVIDIA_AGGRESSIVE_CTGP_OFFSET )
-    applyNVIDIACTGPOffset( NVIDIA_AGGRESSIVE_CTGP_OFFSET );
+  if ( !m_hasAppliedNVIDIAOffset )
+    return;
 
   std::ifstream file( NVIDIA_CTGP_OFFSET );
   if ( file.is_open() )
@@ -332,7 +332,7 @@ bool ProfileSettingsWorker::getAvailableProfilesViaAPI( std::vector< std::string
     profiles = { "power_save", "enthusiast", UNIWILL_OVERBOOST_PROFILE };
     syslog( LOG_WARNING,
             "ProfileSettingsWorker: ODM profile list unavailable; forcing Uniwill profile "
-            "fallback for aggressive dGPU power" );
+            "fallback" );
     return true;
   }
 
@@ -446,17 +446,6 @@ void ProfileSettingsWorker::applyProfileViaAPI( const std::string &chosenProfile
     return;
   }
 
-  if ( m_nvidiaPowerCTRLAvailable
-       && std::ranges::find( availableProfiles, UNIWILL_OVERBOOST_PROFILE ) != availableProfiles.end()
-       && profileToApply != UNIWILL_OVERBOOST_PROFILE )
-  {
-    syslog( LOG_WARNING,
-            "ProfileSettingsWorker: Forcing ODM profile '%s' for aggressive dGPU power "
-            "(requested '%s')",
-            UNIWILL_OVERBOOST_PROFILE.c_str(), profileToApply.c_str() );
-    profileToApply = UNIWILL_OVERBOOST_PROFILE;
-  }
-
   if ( setProfileViaAPI( profileToApply ) )
   {
     syslog( LOG_INFO, "ProfileSettingsWorker: Set ODM profile to '%s'",
@@ -528,16 +517,7 @@ void ProfileSettingsWorker::applyODMPowerLimits()
 
   std::vector< uint32_t > newTDPValues;
 
-  if ( m_nvidiaPowerCTRLAvailable && m_cTGPAdjustmentSupported )
-  {
-    for ( const auto &tdp : tdpInfo )
-    {
-      newTDPValues.push_back( tdp.max );
-    }
-
-    logLine( "ProfileSettingsWorker: Forcing maximum ODM TDPs for aggressive dGPU power" );
-  }
-  else if ( not odmPowerLimits.tdpValues.empty() )
+  if ( not odmPowerLimits.tdpValues.empty() )
   {
     for ( int val : odmPowerLimits.tdpValues )
       newTDPValues.push_back( static_cast< uint32_t >( val ) );
@@ -717,7 +697,6 @@ void ProfileSettingsWorker::initNVIDIAPowerCTRL()
   {
     // Always query hardware power limits so the GUI has real values
     queryNVIDIAPowerLimits();
-    applyNVIDIACTGPOffset( NVIDIA_AGGRESSIVE_CTGP_OFFSET );
   }
 }
 
@@ -736,9 +715,6 @@ bool ProfileSettingsWorker::applyNVIDIACTGPOffset( int32_t ctgpOffset )
     std::cout << "[NVIDIAPowerCTRL] cTGP adjustment not supported for this device, skipping" << std::endl;
     return false;
   }
-
-  const int32_t requestedOffset = ctgpOffset;
-  ctgpOffset = NVIDIA_AGGRESSIVE_CTGP_OFFSET;
 
   const bool forcedBeforeWrite = forceNVIDIAPowerControlUnlocked();
 
@@ -787,11 +763,11 @@ bool ProfileSettingsWorker::applyNVIDIACTGPOffset( int32_t ctgpOffset )
     // Always track the value the hardware actually accepted so that the
     // periodic validator does not fight the hardware.
     m_lastAppliedNVIDIAOffset = verifiedValue;
+    m_hasAppliedNVIDIAOffset = true;
 
     if ( verifiedValue == ctgpOffset )
     {
-      std::cout << "[NVIDIAPowerCTRL] Applied aggressive cTGP offset: " << ctgpOffset
-                << " (requested " << requestedOffset << ")" << std::endl;
+      std::cout << "[NVIDIAPowerCTRL] Applied cTGP offset: " << ctgpOffset << std::endl;
     }
     else
     {
@@ -842,9 +818,9 @@ bool ProfileSettingsWorker::forceNVIDIAPowerControlUnlocked( bool verbose )
   const bool ctgpEnabled = writeNVIDIAPowerControlNodeIfAvailable( NVIDIA_CTGP_ENABLE, 1 );
   const bool dbEnabled = writeNVIDIAPowerControlNodeIfAvailable( NVIDIA_DB_ENABLE, 1 );
   const bool tppUnlocked = writeNVIDIAPowerControlNodeIfAvailable(
-    NVIDIA_TPP_OFFSET, NVIDIA_AGGRESSIVE_TPP_OFFSET );
+    NVIDIA_TPP_OFFSET, NVIDIA_TPP_UNLOCK_OFFSET );
   const bool dbOffsetSet = writeNVIDIAPowerControlNodeIfAvailable(
-    NVIDIA_DB_OFFSET, NVIDIA_AGGRESSIVE_DB_OFFSET );
+    NVIDIA_DB_OFFSET, NVIDIA_DB_DYNAMIC_BOOST_OFFSET );
 
   if ( verbose && ( ctgpEnabled || dbEnabled || tppUnlocked || dbOffsetSet ) )
   {

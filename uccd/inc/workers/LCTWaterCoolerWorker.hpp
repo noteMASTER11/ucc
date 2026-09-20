@@ -189,9 +189,11 @@ private:
   void handleConnecting();
   void handleConnected();
   void handleError();
+  void recordConnectionFailure();
   void onConnectionReady();
 
   // Discovery helpers
+  bool ensureDiscoveryAgent();
   bool startDiscoveryInternal();
   void stopDiscoveryInternal();
 
@@ -212,7 +214,7 @@ private:
 
   // Suspend / resume
   void setupSuspendResumeHandling();
-  void onPrepareForSleep( bool suspending );
+  Q_SLOT void onPrepareForSleep( bool suspending );
 
   // BLE keepalive
   void sendKeepaliveProbe();
@@ -270,6 +272,9 @@ private:
 
   // Store trusted MAC to prevent impersonation
   QString m_trustedDeviceMacAddress;
+  QString m_savedDeviceAddress;
+  QString m_savedDeviceName;
+  bool m_hasMigrationConfig = false;
 
   QList< DeviceInfo > m_discoveredDevices;
   ucc::LCTDeviceModel m_connectedModel = ucc::LCTDeviceModel::LCT21001;

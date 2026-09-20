@@ -1,0 +1,222 @@
+diff --git a/src/ite_8291/ite_8291.c b/src/ite_8291/ite_8291.c
+index 4c677ab..f848079 100644
+--- a/src/ite_8291/ite_8291.c
++++ b/src/ite_8291/ite_8291.c
+@@ -96,6 +96,7 @@
+ #include <linux/usb.h>
+ #include <linux/hid.h>
+ #include <linux/dmi.h>
++#include "../mtp_runtime_profile.h"
+ #include <linux/led-class-multicolor.h>
+ #include <linux/of.h>
+ 
+@@ -215,7 +216,8 @@ static void color_scaling(struct hid_device *hdev, u8 *red, u8 *green, u8 *blue,
+ 			*red = (148 * *red) / 255;
+ 			*blue = (137 * *blue) / 255;
+ 		}
+-	} else if ((dmi_match(DMI_PRODUCT_SKU, "STELLARIS16I07") ||
++	} else if ((mtp_runtime_profile_matches() ||
++		    dmi_match(DMI_PRODUCT_SKU, "STELLARIS16I07") ||
+ 		    dmi_match(DMI_PRODUCT_SKU, "STELLARIS16A07") ||
+ 		    dmi_match(DMI_BOARD_NAME, "X6AR55xU"))
+ 		   && hdev->product == 0x600b) {
+@@ -507,12 +509,21 @@ static int register_leds(struct hid_device *hdev)
+ 			device_data->mcled_cdevs[i][j].subled_info = device_data->mcled_cdevs_subleds[i][j];
+ 			device_data->mcled_cdevs[i][j].subled_info[0].color_index = LED_COLOR_ID_RED;
+ 			device_data->mcled_cdevs[i][j].subled_info[0].intensity = ITE8291_KB_COLOR_DEFAULT_RED;
++#if LINUX_VERSION_CODE >= KERNEL_VERSION(7, 2, 0)
++			device_data->mcled_cdevs[i][j].subled_info[0].max_intensity = 0xff;
++#endif
+ 			device_data->mcled_cdevs[i][j].subled_info[0].channel = ITE8291_LEDS_PER_ROW_MAX * i + j;
+ 			device_data->mcled_cdevs[i][j].subled_info[1].color_index = LED_COLOR_ID_GREEN;
+ 			device_data->mcled_cdevs[i][j].subled_info[1].intensity = ITE8291_KB_COLOR_DEFAULT_GREEN;
++#if LINUX_VERSION_CODE >= KERNEL_VERSION(7, 2, 0)
++			device_data->mcled_cdevs[i][j].subled_info[1].max_intensity = 0xff;
++#endif
+ 			device_data->mcled_cdevs[i][j].subled_info[1].channel = ITE8291_LEDS_PER_ROW_MAX * i + j;
+ 			device_data->mcled_cdevs[i][j].subled_info[2].color_index = LED_COLOR_ID_BLUE;
+ 			device_data->mcled_cdevs[i][j].subled_info[2].intensity = ITE8291_KB_COLOR_DEFAULT_BLUE;
++#if LINUX_VERSION_CODE >= KERNEL_VERSION(7, 2, 0)
++			device_data->mcled_cdevs[i][j].subled_info[2].max_intensity = 0xff;
++#endif
+ 			device_data->mcled_cdevs[i][j].subled_info[2].channel = ITE8291_LEDS_PER_ROW_MAX * i + j;
+ 
+ 			res = devm_led_classdev_multicolor_register(&hdev->dev, &device_data->mcled_cdevs[i][j]);
+@@ -651,12 +662,21 @@ static int ite8291_zones_add(struct hid_device *hdev)
+ 		zones_data->mcled_cdevs[i].subled_info = zones_data->mcled_cdevs_subleds[i];
+ 		zones_data->mcled_cdevs[i].subled_info[0].color_index = LED_COLOR_ID_RED;
+ 		zones_data->mcled_cdevs[i].subled_info[0].intensity = 255;
++#if LINUX_VERSION_CODE >= KERNEL_VERSION(7, 2, 0)
++		zones_data->mcled_cdevs[i].subled_info[0].max_intensity = 0xff;
++#endif
+ 		zones_data->mcled_cdevs[i].subled_info[0].channel = i;
+ 		zones_data->mcled_cdevs[i].subled_info[1].color_index = LED_COLOR_ID_GREEN;
+ 		zones_data->mcled_cdevs[i].subled_info[1].intensity = 255;
++#if LINUX_VERSION_CODE >= KERNEL_VERSION(7, 2, 0)
++		zones_data->mcled_cdevs[i].subled_info[1].max_intensity = 0xff;
++#endif
+ 		zones_data->mcled_cdevs[i].subled_info[1].channel = i;
+ 		zones_data->mcled_cdevs[i].subled_info[2].color_index = LED_COLOR_ID_BLUE;
+ 		zones_data->mcled_cdevs[i].subled_info[2].intensity = 255;
++#if LINUX_VERSION_CODE >= KERNEL_VERSION(7, 2, 0)
++		zones_data->mcled_cdevs[i].subled_info[2].max_intensity = 0xff;
++#endif
+ 		zones_data->mcled_cdevs[i].subled_info[2].channel = i;
+ 
+ 		result = devm_led_classdev_multicolor_register(&hdev->dev, &zones_data->mcled_cdevs[i]);
+diff --git a/src/mtp_runtime_profile.h b/src/mtp_runtime_profile.h
+new file mode 100644
+index 0000000..8286b87
+--- /dev/null
++++ b/src/mtp_runtime_profile.h
+@@ -0,0 +1,25 @@
++/* Generated from a sealed MTP hardware classification. */
++#ifndef MTP_RUNTIME_PROFILE_H
++#define MTP_RUNTIME_PROFILE_H
++
++#include <linux/dmi.h>
++
++static inline bool mtp_runtime_profile_matches(void)
++{
++	static const struct dmi_system_id systems[] = {
++		{
++			.ident = "MTP:runtime-mechrevo-yaoshi-x6ar55xy-intel",
++			.matches = {
++				DMI_EXACT_MATCH(DMI_SYS_VENDOR, "MECHREVO"),
++				DMI_EXACT_MATCH(DMI_BOARD_NAME, "YAOSHI Series-X6AR55xY"),
++				DMI_EXACT_MATCH(DMI_BOARD_VERSION, "Standard"),
++				DMI_EXACT_MATCH(DMI_PRODUCT_SKU, "0001"),
++			},
++		},
++		{ }
++	};
++
++	return dmi_check_system(systems);
++}
++
++#endif
+diff --git a/src/tuxedo_compatibility_check/tuxedo_compatibility_check.c b/src/tuxedo_compatibility_check/tuxedo_compatibility_check.c
+index ec6fd1a..268c9d2 100644
+--- a/src/tuxedo_compatibility_check/tuxedo_compatibility_check.c
++++ b/src/tuxedo_compatibility_check/tuxedo_compatibility_check.c
+@@ -216,6 +216,15 @@ static const struct dmi_system_id tuxedo_dmi_string_match[] = {
+ 			DMI_MATCH(DMI_CHASSIS_VENDOR, "TUXEDO"),
+ 		},
+ 	},
++	{
++		.ident = "MTP:runtime-mechrevo-yaoshi-x6ar55xy-intel",
++		.matches = {
++			DMI_EXACT_MATCH(DMI_SYS_VENDOR, "MECHREVO"),
++			DMI_EXACT_MATCH(DMI_BOARD_NAME, "YAOSHI Series-X6AR55xY"),
++			DMI_EXACT_MATCH(DMI_BOARD_VERSION, "Standard"),
++			DMI_EXACT_MATCH(DMI_PRODUCT_SKU, "0001"),
++		},
++	},
+ 	{ }
+ };
+ 
+diff --git a/src/tuxedo_io/tuxedo_io.c b/src/tuxedo_io/tuxedo_io.c
+index 3220c60..c74713a 100644
+--- a/src/tuxedo_io/tuxedo_io.c
++++ b/src/tuxedo_io/tuxedo_io.c
+@@ -32,6 +32,7 @@
+ #include <linux/dmi.h>
+ #include "../clevo_interfaces.h"
+ #include "../uniwill_interfaces.h"
++#include "../mtp_runtime_profile.h"
+ #include "tuxedo_io_ioctl.h"
+ 
+ MODULE_DESCRIPTION("Hardware interface for TUXEDO laptops");
+@@ -237,7 +238,8 @@ static void uw_id_tdp(void)
+ 	} else if (dmi_match(DMI_PRODUCT_SKU, "STELLSL15A06")) {
+ 		tdp_min_defs = tdp_min_gmxhgxa;
+ 		tdp_max_defs = tdp_max_gmxhgxa;
+-	} else if (dmi_match(DMI_PRODUCT_SKU, "STELLARIS16I07")) {
++	} else if (dmi_match(DMI_PRODUCT_SKU, "STELLARIS16I07") ||
++		   mtp_runtime_profile_matches()) {
+ 		tdp_min_defs = tdp_min_x6ar5xx;
+ 		tdp_max_defs = tdp_max_x6ar5xx;
+ 	} else if (dmi_match(DMI_PRODUCT_SKU, "STELLARIS16A07")) {
+diff --git a/src/tuxedo_nb02_nvidia_power_ctrl/tuxedo_nb02_nvidia_power_ctrl.c b/src/tuxedo_nb02_nvidia_power_ctrl/tuxedo_nb02_nvidia_power_ctrl.c
+index b460db6..98ed3db 100644
+--- a/src/tuxedo_nb02_nvidia_power_ctrl/tuxedo_nb02_nvidia_power_ctrl.c
++++ b/src/tuxedo_nb02_nvidia_power_ctrl/tuxedo_nb02_nvidia_power_ctrl.c
+@@ -24,6 +24,12 @@
+ #include <linux/pci.h>
+ 
+ #include "../uniwill_interfaces.h"
++#include "../mtp_runtime_profile.h"
++
++static bool active_mode;
++module_param_named(active_mode, active_mode, bool, 0400);
++MODULE_PARM_DESC(active_mode, "Enable writes only after userspace vBIOS/adapter/thermal gates");
++
+ 
+ #define __unused __attribute__((unused))
+ 
+@@ -309,10 +315,15 @@ static int __init tuxedo_nb02_nvidia_power_ctrl_probe(struct platform_device *pd
+ 	if (result < 0)
+ 		return result;
+ 
+-	// Check for NVIDIA 3000 series or higher
++	if (!mtp_runtime_profile_matches())
++		return -ENODEV;
++
++	// Check the exact GPU and board subsystem from classification.json
+ 	result = -ENODEV;
+ 	while ((gpu_dev = pci_get_device(0x10de, PCI_ANY_ID, gpu_dev)) != NULL) {
+-		if (gpu_dev->device >= 0x2200) {
++		if (gpu_dev->device == 0x2c19
++		    && gpu_dev->subsystem_vendor == 0x1d05
++		    && gpu_dev->subsystem_device == 0x6041) {
+ 			result = 0;
+ 			pci_dev_put(gpu_dev);
+ 			break;
+@@ -321,6 +332,11 @@ static int __init tuxedo_nb02_nvidia_power_ctrl_probe(struct platform_device *pd
+ 	if (result < 0)
+ 		return result;
+ 
++	if (!active_mode) {
++		dev_info(&pdev->dev, "diagnostic mode: EC writes and writable sysfs are disabled\n");
++		return 0;
++	}
++
+ 	result = init_db_and_ctgp();
+ 	if (result < 0)
+ 		return result;
+diff --git a/src/uniwill_keyboard.h b/src/uniwill_keyboard.h
+index b5968d7..3572527 100644
+--- a/src/uniwill_keyboard.h
++++ b/src/uniwill_keyboard.h
+@@ -38,6 +38,7 @@
+ #include <linux/serio.h>
+ #include <acpi/battery.h>
+ #include "uniwill_interfaces.h"
++#include "mtp_runtime_profile.h"
+ #include "uniwill_leds.h"
+ 
+ #define FAN_ON_MIN_SPEED_PERCENT 25
+@@ -973,6 +974,7 @@ static int is_auto_boot_and_powershare_supported(bool *status)
+ 		  dmi_match(DMI_BOARD_NAME, "GM6IXxB_MB2") ||
+ 		  dmi_match(DMI_BOARD_NAME, "GM7IXxN") ||
+ 		  // Stellaris Gen7
++		  mtp_runtime_profile_matches() ||
+ 		  dmi_match(DMI_BOARD_NAME, "X6AR5xxY") ||
+ 		  dmi_match(DMI_BOARD_NAME, "X6AR5xxY_mLED") ||
+ 		  dmi_match(DMI_BOARD_NAME, "X6FR5xxY") ||
+@@ -1444,6 +1446,7 @@ static int uw_has_hidden_bios_options(bool *status)
+ {
+ 	*status = false
+ 		// Stellaris 16 G7
++		|| mtp_runtime_profile_matches()
+ 		|| dmi_match(DMI_BOARD_NAME, "X6AR5xxY")
+ 		|| dmi_match(DMI_BOARD_NAME, "X6AR5xxY_mLED")
+ 		// IBM 16 G10
+@@ -1748,6 +1751,7 @@ struct uniwill_device_features_t *uniwill_get_device_features(void)
+ #if LINUX_VERSION_CODE >= KERNEL_VERSION(4, 18, 0)
+ 		|| dmi_match(DMI_PRODUCT_SKU, "STELLARIS16I06")
+ 		|| dmi_match(DMI_PRODUCT_SKU, "STELLARIS17I06")
++		|| mtp_runtime_profile_matches()
+ 		|| dmi_match(DMI_PRODUCT_SKU, "STELLARIS16I07")
+ 		|| dmi_match(DMI_PRODUCT_SKU, "STELLARIS16A07")
+ 		|| dmi_match(DMI_PRODUCT_SKU, "STELLSL15I06")

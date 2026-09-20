@@ -1,2 +1,5 @@
 # Auto detect text files and perform LF normalization
 * text=auto
+
+# Unified-diff context must retain its leading space before kernel indentation.
+contrib/mechrevo/arch/drivers/*.patch -whitespace

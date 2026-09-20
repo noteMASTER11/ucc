@@ -26,6 +26,8 @@
 #include <QDBusReply>
 #include <QDebug>
 #include "CommonTypes.hpp"
+#include "AsyncRead.hpp"
+#include <QSignalBlocker>
 
 namespace ucc
 {
@@ -49,26 +51,39 @@ FanControlTab::FanControlTab( UccdClient *client,
       QDBusConnection::systemBus(), this );
 
     m_waterCoolerPollTimer = new QTimer( this );
-    connect( m_waterCoolerPollTimer, &QTimer::timeout, this, [this]() {
-      // Only poll if water cooler is actually enabled
-      if ( not m_waterCoolerDbus ) return;
-      if ( bool wcEnabled = m_waterCoolerEnableCheckBox ? m_waterCoolerEnableCheckBox->isChecked() : false;
-           !wcEnabled ) {
-        // If water cooler becomes disabled, force disconnect
-        onDisconnected();
-        return;
-      }
-      if ( QDBusReply< bool > conn = m_waterCoolerDbus->call( QStringLiteral( "GetWaterCoolerConnected" ) );
-           conn.isValid() && conn.value() )
-        onConnected();
-      else
-        onDisconnected();
-    } );
+    connect(m_waterCoolerPollTimer, &QTimer::timeout, this, &FanControlTab::pollWaterCoolerStatus);
     // Don't start timer immediately - wait for water cooler to be enabled
   }
 
   setupUI();
   connectSignals();
+}
+
+void FanControlTab::pollWaterCoolerStatus()
+{
+  if (!isVisible() || window()->isMinimized() || !isWaterCoolerEnabled() || m_waterCoolerReadPending) return;
+  m_waterCoolerReadPending = true;
+  readUccdBatch(this, {"GetWaterCoolerConnected", "GetWaterCoolerPumpLevel", "GetWaterCoolerFanSpeed"},
+    [this](const QVariantMap &values) {
+      m_waterCoolerReadPending = false;
+      if (!isVisible() || window()->isMinimized() || !isWaterCoolerEnabled() ||
+          !values.contains("GetWaterCoolerConnected")) return;
+      if (!values.value("GetWaterCoolerConnected").toBool()) { onDisconnected(); return; }
+      onConnected();
+      // Reflect the running cooler; never send commands while hydrating the UI.
+      if (values.contains("GetWaterCoolerPumpLevel") && !m_pumpVoltageCombo->hasFocus()) {
+        const int index = m_pumpVoltageCombo->findData(values.value("GetWaterCoolerPumpLevel"));
+        if (index >= 0) {
+          const QSignalBlocker blocked(m_pumpVoltageCombo);
+          m_pumpVoltageCombo->setCurrentIndex(index);
+        }
+      }
+      const int speed = values.value("GetWaterCoolerFanSpeed", -1).toInt();
+      if (speed >= 0 && speed <= 100 && !m_fanSpeedSlider->isSliderDown() && !m_fanSpeedSlider->hasFocus()) {
+        const QSignalBlocker blocked(m_fanSpeedSlider);
+        m_fanSpeedSlider->setValue(speed);
+      }
+    });
 }
 
 // UI construction
@@ -473,10 +488,6 @@ void FanControlTab::onWaterCoolerEnableToggled( bool enabled )
   // Update polling state based on new enable state
   updateWaterCoolerPolling();
 
-  // Reset initialization flag when water cooler is enabled
-  if ( enabled )
-    m_manualControlInitialized = false;
-
   // Update manual control state when water cooler enable state changes
   updateManualControlState();
 
@@ -495,9 +506,6 @@ void FanControlTab::onConnected()
   if ( m_isWcConnected ) return;
   m_isWcConnected = true;
 
-  // Reset manual control initialization when reconnecting
-  m_manualControlInitialized = false;
-
   // Update manual control state now that water cooler is connected
   updateManualControlState();
 
@@ -513,9 +521,6 @@ void FanControlTab::onDisconnected()
 {
   if ( !m_isWcConnected ) return;
   m_isWcConnected = false;
-
-  // Reset initialization flag when disconnecting
-  m_manualControlInitialized = false;
 
   // Update manual control state now that water cooler is disconnected
   updateManualControlState();
@@ -593,12 +598,7 @@ void FanControlTab::onColorPickerClicked()
 
 void FanControlTab::setWaterCoolerAutoControl( bool autoControl )
 {
-  bool wasAutoControl = m_autoControl;
   m_autoControl = autoControl;
-
-  // Reset initialization flag when switching to manual control
-  if ( wasAutoControl && !autoControl )
-    m_manualControlInitialized = false;
 
   // Update manual control state considering all factors
   updateManualControlState();
@@ -617,24 +617,6 @@ void FanControlTab::updateManualControlState()
     m_pumpVoltageCombo->setEnabled( enableManualControls );
   if ( m_fanSpeedSlider )
     m_fanSpeedSlider->setEnabled( enableManualControls );
-
-  // When manual controls are first enabled after connection or auto control change,
-  // ensure pump is set to off for safety
-  if ( enableManualControls && !m_manualControlInitialized && m_waterCoolerDbus )
-  {
-    m_manualControlInitialized = true;
-    // Set pump to off and fan speed to minimum for safety
-    if ( m_pumpVoltageCombo )
-    {
-      m_pumpVoltageCombo->setCurrentIndex( 0 ); // Set to "Off"
-      m_waterCoolerDbus->call( QStringLiteral( "TurnOffWaterCoolerPump" ) );
-    }
-    if ( m_fanSpeedSlider )
-    {
-      m_fanSpeedSlider->setValue( 0 ); // Set to minimum
-      m_waterCoolerDbus->call( QStringLiteral( "SetWaterCoolerFanSpeed" ), 0 );
-    }
-  }
 }
 
 void FanControlTab::updateWaterCoolerPolling()
@@ -645,16 +627,10 @@ void FanControlTab::updateWaterCoolerPolling()
 
   if ( wcEnabled ) {
     if ( !m_waterCoolerPollTimer->isActive() )
-      m_waterCoolerPollTimer->start( 1000 );
+      m_waterCoolerPollTimer->start( 2000 );
   } else {
-    if ( m_waterCoolerPollTimer->isActive() ) {
-      m_waterCoolerPollTimer->stop();
-      // Force disconnect when disabled
-      onDisconnected();
-      // Ensure pump is turned off when disabling
-      if ( m_waterCoolerDbus )
-        m_waterCoolerDbus->call( QStringLiteral( "TurnOffWaterCoolerPump" ) );
-    }
+    m_waterCoolerPollTimer->stop();
+    onDisconnected();
   }
 }
 

@@ -6,6 +6,8 @@ Exec=ucc-gui
 Icon=ucc-gui
 Terminal=false
 Categories=System;Settings;Qt;
-StartupNotify=true
+# A singleton launch may only activate an existing process, without completing
+# the desktop's startup-notification transaction.
+StartupNotify=false
 # Ensure KDE associates running windows with this desktop file
 StartupWMClass=ucc-gui

@@ -16,6 +16,7 @@ import GLib from 'gi://GLib';
 import GObject from 'gi://GObject';
 import St from 'gi://St';
 import Clutter from 'gi://Clutter';
+import Shell from 'gi://Shell';
 
 import { Extension } from 'resource:///org/gnome/shell/extensions/extension.js';
 import * as PanelMenu from 'resource:///org/gnome/shell/ui/panelMenu.js';
@@ -91,6 +92,10 @@ class UccIndicator extends PanelMenu.Button {
     _init(extensionObj) {
         super._init(0.5, 'UCC');
         this._ext = extensionObj;
+        this._destroyed = false;
+        this._connectionGeneration = 0;
+        this._pendingReads = new Map();
+        this._updatingControls = false;
 
         // Panel icon - use the project's own tray icon (installed to share/pixmaps)
         this._icon = new St.Icon({
@@ -139,9 +144,20 @@ class UccIndicator extends PanelMenu.Button {
 
         // Build the popup UI
         this._buildPopup();
+        this.menu.connect('open-state-changed', (_menu, open) => {
+            if (open && !this._destroyed) {
+                this._pollMetrics();
+                this._pollSlowState();
+            }
+        });
 
         // Watch daemon
         this._client.watch(connected => {
+            if (this._destroyed) return;
+            this._connectionGeneration++;
+            this._pendingReads.clear();
+            this._capabilitiesLoaded = false;
+            this._profilesLoaded = false;
             this._state.connected = connected;
             this._updateConnectionUI();
             if (connected) {
@@ -416,6 +432,7 @@ class UccIndicator extends PanelMenu.Button {
         this._brightnessSlider = new Slider.Slider(0.5);
         this._brightnessSlider.x_expand = true;
         this._brightnessSlider.connect('notify::value', () => {
+            if (this._updatingControls) return;
             const val = Math.round(this._brightnessSlider.value * 100);
             this._client.setDisplayBrightness(val);
             this._state.displayBrightness = val;
@@ -437,7 +454,13 @@ class UccIndicator extends PanelMenu.Button {
             x_expand: true,
         });
         openBtn.connect('clicked', () => {
-            GLib.spawn_command_line_async('/usr/bin/env ucc-gui');
+            const app = Shell.AppSystem.get_default().lookup_app('ucc-gui.desktop');
+            // Shell can focus an existing Wayland window using the user action.
+            // The GUI also enforces one instance for other launch paths.
+            if (app)
+                app.activate();
+            else
+                GLib.spawn_command_line_async('/usr/bin/env ucc-gui');
             this.menu.close();
         });
         box.add_child(openBtn);
@@ -481,6 +504,7 @@ class UccIndicator extends PanelMenu.Button {
         this._wcFanSlider = new Slider.Slider(0.5);
         this._wcFanSlider.x_expand = true;
         this._wcFanSlider.connect('notify::value', () => {
+            if (this._updatingControls) return;
             const val = Math.round(this._wcFanSlider.value * 100);
             this._client.setWaterCoolerFanSpeed(val);
             this._state.wcFanPercent = val;
@@ -597,8 +621,10 @@ class UccIndicator extends PanelMenu.Button {
             const id = s.profileIds[i];
             const name = s.profileNames[i] ?? id;
             const isActive = id === s.activeProfileId;
-            const row = this._makeChooserRow(name, isActive, () => {
-                if (this._client.setActiveProfile(id)) {
+            const row = this._makeChooserRow(name, isActive, async () => {
+                const generation = this._connectionGeneration;
+                if (await this._client.setActiveProfile(id) && !this._destroyed &&
+                    generation === this._connectionGeneration) {
                     s.activeProfileId = id;
                     s.activeProfileName = name;
                     this._rebuildProfileButtons();
@@ -651,9 +677,10 @@ class UccIndicator extends PanelMenu.Button {
         }
     }
 
-    _applyFanProfile(fanProfileId) {
-        const raw = this._client.getFanProfile(fanProfileId);
-        if (!raw) return;
+    async _applyFanProfile(fanProfileId) {
+        const generation = this._connectionGeneration;
+        const raw = await this._client.getFanProfile(fanProfileId);
+        if (!raw || this._destroyed || generation !== this._connectionGeneration) return;
         try {
             const src = JSON.parse(raw);
             const dst = {};
@@ -673,7 +700,7 @@ class UccIndicator extends PanelMenu.Button {
         if (!profileData) return;
         const json = profileData.json;
         if (json) {
-            this._client.setKeyboardBacklight(json);
+            this._client.setKeyboardBacklight(typeof json === 'string' ? json : JSON.stringify(json));
         }
     }
 
@@ -698,193 +725,223 @@ class UccIndicator extends PanelMenu.Button {
 
     // Data loading
 
-    _loadCapabilities() {
-        if (!this._client.isDeviceSupported()) {
-            log('[UCC] Device not supported — hiding indicator');
-            this._stopTimers();
-            this.visible = false;
-            return;
-        }
-
-        const wc = this._client.getWaterCoolerSupported();
-        if (wc !== this._state.waterCoolerSupported) {
-            this._state.waterCoolerSupported = wc;
-            this._wcMetricsBox.visible = wc;
-            // Show/hide water cooler tab
-            if (wc && !this._tabButtons['watercooler']) {
-                this._addTab('watercooler', 'Water Cooler');
-            }
-        }
-
-        const sysInfoRaw = this._client.getSystemInfoJSON();
-        if (sysInfoRaw) {
-            try {
-                const si = JSON.parse(sysInfoRaw);
-                this._state.laptopModel = si.laptopModel ?? '';
-                this._state.cpuModel    = si.cpuModel    ?? '';
-                // prefer dGPU model, fall back to iGPU
-                this._state.gpuModel    = si.dGpuModel   || si.iGpuModel || '';
-                this._updateSystemInfoLabels();
-            } catch { /* ignore */ }
+    // One outstanding read batch per category; never block the Shell main loop.
+    async _readState(key, read, apply) {
+        if (this._destroyed || !this._client.connected || this._pendingReads.has(key)) return;
+        const token = {generation: this._connectionGeneration};
+        this._pendingReads.set(key, token);
+        try {
+            const values = await read();
+            if (this._destroyed || !this._client.connected ||
+                token.generation !== this._connectionGeneration) return;
+            this._updatingControls = true;
+            try { apply(values); }
+            finally { this._updatingControls = false; }
+        } catch (error) {
+            if (!this._destroyed) logError(error, '[UCC] Asynchronous refresh failed');
+        } finally {
+            if (this._pendingReads.get(key) === token) this._pendingReads.delete(key);
         }
     }
 
+    _loadCapabilities() {
+        return this._readState('capabilities', () => Promise.all([
+            this._client.isDeviceSupported(),
+            this._client.getWaterCoolerSupported(),
+            this._client.getSystemInfoJSON()
+        ]), ([supported, wc, sysInfoRaw]) => {
+            if (supported === null) return;
+            this._capabilitiesLoaded = true;
+            if (!supported) {
+                log('[UCC] Device not supported — hiding indicator');
+                this._stopTimers();
+                this.visible = false;
+                return;
+            }
+
+            if (wc !== null && wc !== this._state.waterCoolerSupported) {
+                this._state.waterCoolerSupported = wc;
+                this._wcMetricsBox.visible = wc;
+                // Show/hide water cooler tab
+                if (wc && !this._tabButtons['watercooler']) {
+                    this._addTab('watercooler', 'Water Cooler');
+                }
+            }
+
+            if (sysInfoRaw) {
+                try {
+                    const si = JSON.parse(sysInfoRaw);
+                    this._state.laptopModel = si.laptopModel ?? '';
+                    this._state.cpuModel    = si.cpuModel    ?? '';
+                    // prefer dGPU model, fall back to iGPU
+                    this._state.gpuModel    = si.dGpuModel   || si.iGpuModel || '';
+                    this._updateSystemInfoLabels();
+                } catch { /* ignore */ }
+            }
+        });
+    }
+
     _loadProfiles() {
-        const s = this._state;
+        return this._readState('profiles', () => Promise.all([
+            this._client.getDefaultProfilesJSON(),
+            this._client.getCustomProfilesJSON(),
+            this._client.getActiveProfileJSON(),
+            this._client.getFanProfileNames(),
+            this._client.getCustomFanProfiles(),
+            this._client.getCustomKeyboardProfiles()
+        ]), ([rawDef, rawCust, ap, fpRaw, rawFanCust, rawKbCust]) => {
+            if (rawDef === null && rawCust === null) return;
+            this._profilesLoaded = true;
+            const s = this._state;
 
-        // Built-in profiles
-        const names = [], ids = [];
-        const rawDef = this._client.getDefaultProfilesJSON();
-        if (rawDef) {
-            try {
-                for (const p of JSON.parse(rawDef)) {
-                    if (p.id) { ids.push(p.id); names.push(p.name ?? p.id); }
-                }
-            } catch { /* ignore */ }
-        }
-
-        // Custom profiles from daemon (Primary Source)
-        const rawCust = this._client.getCustomProfilesJSON();
-        if (rawCust) {
-            try {
-                for (const p of JSON.parse(rawCust)) {
-                    if (p.id && !ids.includes(p.id)) {
-                        ids.push(p.id); names.push(p.name ?? p.id);
+            // Built-in profiles
+            const names = [], ids = [];
+            if (rawDef) {
+                try {
+                    for (const p of JSON.parse(rawDef)) {
+                        if (p.id) { ids.push(p.id); names.push(p.name ?? p.id); }
                     }
-                }
-            } catch { /* ignore */ }
-        }
+                } catch { /* ignore */ }
+            }
 
-        // Load uccrc once - QSettings (IniFormat) wraps byte arrays with
-        // @ByteArray(...) which GLib.KeyFile returns verbatim.
-        // We must use get_value() (raw) instead of get_string() because
-        // GLib cannot interpret the @ByteArray encoding.
-        let uccrcKf = null;
-        try {
-            const uccrc = GLib.build_filenamev([GLib.get_home_dir(), '.config', 'uccrc']);
-            uccrcKf = new GLib.KeyFile();
-            uccrcKf.load_from_file(uccrc, GLib.KeyFileFlags.NONE);
-        } catch { /* file may not exist */ }
-
-        // Fallback: Custom profiles from uccrc
-        if (uccrcKf) {
-            try {
-                const cp = unwrapQByteArray(uccrcKf.get_value('General', 'customProfiles'));
-                if (cp) {
-                    for (const p of JSON.parse(cp)) {
+            // Custom profiles from daemon (Primary Source)
+            if (rawCust) {
+                try {
+                    for (const p of JSON.parse(rawCust)) {
                         if (p.id && !ids.includes(p.id)) {
                             ids.push(p.id); names.push(p.name ?? p.id);
                         }
                     }
-                }
-            } catch { /* ignore parse errors */ }
-        }
+                } catch { /* ignore */ }
+            }
 
-        s.profileNames = names;
-        s.profileIds = ids;
-
-        // Active profile
-        const ap = this._client.getActiveProfileJSON();
-        if (ap) {
+            // Load uccrc once - QSettings (IniFormat) wraps byte arrays with
+            // @ByteArray(...) which GLib.KeyFile returns verbatim.
+            // We must use get_value() (raw) instead of get_string() because
+            // GLib cannot interpret the @ByteArray encoding.
+            let uccrcKf = null;
             try {
-                const obj = JSON.parse(ap);
-                s.activeProfileId = obj.id ?? '';
-                s.activeProfileName = obj.name ?? '';
-                s.activeProfileFanId = obj.fan?.fanProfile ?? '';
-                s.wcAutoControl = obj.fan?.autoControlWC ?? true;
-            } catch { /* ignore */ }
-        }
+                const uccrc = GLib.build_filenamev([GLib.get_home_dir(), '.config', 'uccrc']);
+                uccrcKf = new GLib.KeyFile();
+                uccrcKf.load_from_file(uccrc, GLib.KeyFileFlags.NONE);
+            } catch { /* file may not exist */ }
 
-        // Fan profiles
-        const fanNames = [], fanIds = [];
-        const fpRaw = this._client.getFanProfileNames();
-        if (fpRaw) {
-            try {
-                for (const p of JSON.parse(fpRaw)) {
-                    if (p.id) { fanIds.push(p.id); fanNames.push(p.name ?? p.id); }
-                }
-            } catch { /* ignore */ }
-        }
-
-        // Custom fan profiles from daemon
-        const rawFanCust = this._client.getCustomFanProfiles();
-        if (rawFanCust) {
-            try {
-                for (const p of JSON.parse(rawFanCust)) {
-                    if (p.id && !fanIds.includes(p.id)) {
-                        fanIds.push(p.id); fanNames.push(p.name ?? p.id);
+            // Fallback: Custom profiles from uccrc
+            if (uccrcKf) {
+                try {
+                    const cp = unwrapQByteArray(uccrcKf.get_value('General', 'customProfiles'));
+                    if (cp) {
+                        for (const p of JSON.parse(cp)) {
+                            if (p.id && !ids.includes(p.id)) {
+                                ids.push(p.id); names.push(p.name ?? p.id);
+                            }
+                        }
                     }
-                }
-            } catch { /* ignore */ }
-        }
+                } catch { /* ignore parse errors */ }
+            }
 
-        // Fallback: Custom fan profiles from uccrc
-        if (uccrcKf) {
-            try {
-                const cfp = unwrapQByteArray(uccrcKf.get_value('General', 'customFanProfiles'));
-                if (cfp) {
-                    for (const p of JSON.parse(cfp)) {
+            s.profileNames = names;
+            s.profileIds = ids;
+
+            // Active profile
+            if (ap) {
+                try {
+                    const obj = JSON.parse(ap);
+                    s.activeProfileId = obj.id ?? '';
+                    s.activeProfileName = obj.name ?? '';
+                    s.activeProfileFanId = obj.fan?.fanProfile ?? '';
+                    s.wcAutoControl = obj.fan?.autoControlWC ?? true;
+                } catch { /* ignore */ }
+            }
+
+            // Fan profiles
+            const fanNames = [], fanIds = [];
+            if (fpRaw) {
+                try {
+                    for (const p of JSON.parse(fpRaw)) {
+                        if (p.id) { fanIds.push(p.id); fanNames.push(p.name ?? p.id); }
+                    }
+                } catch { /* ignore */ }
+            }
+
+            // Custom fan profiles from daemon
+            if (rawFanCust) {
+                try {
+                    for (const p of JSON.parse(rawFanCust)) {
                         if (p.id && !fanIds.includes(p.id)) {
                             fanIds.push(p.id); fanNames.push(p.name ?? p.id);
                         }
                     }
-                }
-            } catch { /* ignore */ }
-        }
+                } catch { /* ignore */ }
+            }
 
-        s.fanProfileNames = fanNames;
-        s.fanProfileIds = fanIds;
-
-        // Keyboard profiles
-        const kbNames = [], kbIds = [], kbData = [];
-
-        // Custom keyboard profiles from daemon
-        const rawKbCust = this._client.getCustomKeyboardProfiles();
-        if (rawKbCust) {
-            try {
-                for (const p of JSON.parse(rawKbCust)) {
-                    if (p.id) {
-                        kbIds.push(p.id);
-                        kbNames.push(p.name ?? p.id);
-                        kbData.push(p);
+            // Fallback: Custom fan profiles from uccrc
+            if (uccrcKf) {
+                try {
+                    const cfp = unwrapQByteArray(uccrcKf.get_value('General', 'customFanProfiles'));
+                    if (cfp) {
+                        for (const p of JSON.parse(cfp)) {
+                            if (p.id && !fanIds.includes(p.id)) {
+                                fanIds.push(p.id); fanNames.push(p.name ?? p.id);
+                            }
+                        }
                     }
-                }
-            } catch { /* ignore */ }
-        }
+                } catch { /* ignore */ }
+            }
 
-        // Fallback: Keyboard profiles from uccrc
-        if (uccrcKf) {
-            try {
-                const ckp = unwrapQByteArray(uccrcKf.get_value('General', 'customKeyboardProfiles'));
-                if (ckp) {
-                    for (const p of JSON.parse(ckp)) {
-                        if (p.id && !kbIds.includes(p.id)) {
+            s.fanProfileNames = fanNames;
+            s.fanProfileIds = fanIds;
+
+            // Keyboard profiles
+            const kbNames = [], kbIds = [], kbData = [];
+
+            // Custom keyboard profiles from daemon
+            if (rawKbCust) {
+                try {
+                    for (const p of JSON.parse(rawKbCust)) {
+                        if (p.id) {
                             kbIds.push(p.id);
                             kbNames.push(p.name ?? p.id);
                             kbData.push(p);
                         }
                     }
-                }
-            } catch { /* ignore */ }
-        }
+                } catch { /* ignore */ }
+            }
 
-        s.keyboardProfileNames = kbNames;
-        s.keyboardProfileIds = kbIds;
-        s.keyboardProfilesData = kbData;
+            // Fallback: Keyboard profiles from uccrc
+            if (uccrcKf) {
+                try {
+                    const ckp = unwrapQByteArray(uccrcKf.get_value('General', 'customKeyboardProfiles'));
+                    if (ckp) {
+                        for (const p of JSON.parse(ckp)) {
+                            if (p.id && !kbIds.includes(p.id)) {
+                                kbIds.push(p.id);
+                                kbNames.push(p.name ?? p.id);
+                                kbData.push(p);
+                            }
+                        }
+                    }
+                } catch { /* ignore */ }
+            }
 
-        // Extract active keyboard profile from the active profile JSON
-        if (ap) {
-            try {
-                const obj = JSON.parse(ap);
-                const kbRef = obj.selectedKeyboardProfile ?? '';
-                // Resolve: may be a UUID or a display name
-                s.activeKeyboardProfileId = this._resolveKeyboardProfileId(kbRef);
-            } catch { /* ignore */ }
-        }
+            s.keyboardProfileNames = kbNames;
+            s.keyboardProfileIds = kbIds;
+            s.keyboardProfilesData = kbData;
 
-        this._rebuildProfileButtons();
-        this._rebuildFanProfileButtons();
-        this._rebuildKeyboardProfileButtons();
+            // Extract active keyboard profile from the active profile JSON
+            if (ap) {
+                try {
+                    const obj = JSON.parse(ap);
+                    const kbRef = obj.selectedKeyboardProfile ?? '';
+                    // Resolve: may be a UUID or a display name
+                    s.activeKeyboardProfileId = this._resolveKeyboardProfileId(kbRef);
+                } catch { /* ignore */ }
+            }
+
+            this._rebuildProfileButtons();
+            this._rebuildFanProfileButtons();
+            this._rebuildKeyboardProfileButtons();
+        });
     }
 
     /** Resolve a keyboard profile reference (UUID or display name) to its canonical UUID. */
@@ -902,11 +959,11 @@ class UccIndicator extends PanelMenu.Button {
 
     _startTimers() {
         this._fastTimerId = GLib.timeout_add(GLib.PRIORITY_DEFAULT, 1500, () => {
-            this._pollMetrics();
+            if (this.menu.isOpen) this._pollMetrics();
             return GLib.SOURCE_CONTINUE;
         });
         this._slowTimerId = GLib.timeout_add(GLib.PRIORITY_DEFAULT, 5000, () => {
-            this._pollSlowState();
+            if (this.menu.isOpen) this._pollSlowState();
             return GLib.SOURCE_CONTINUE;
         });
     }
@@ -917,101 +974,102 @@ class UccIndicator extends PanelMenu.Button {
     }
 
     _pollMetrics() {
-        if (!this._client.connected) return;
-        const s = this._state;
-
-        s.cpuTemp   = this._client.getCpuTemperature();
-        s.gpuTemp   = this._client.getGpuTemperature();
-        s.cpuFreq   = this._client.getCpuFrequency();
-        s.gpuFreq   = this._client.getGpuFrequency();
-        s.cpuPower  = this._client.getCpuPower();
-        s.gpuPower  = this._client.getGpuPower();
-        s.cpuFanRPM = this._client.getFanSpeedRPM();
-        s.gpuFanRPM = this._client.getGpuFanSpeedRPM();
-        s.cpuFanPct = this._client.getFanSpeedPercent();
-        s.gpuFanPct = this._client.getGpuFanSpeedPercent();
-
-        if (s.waterCoolerSupported) {
-            s.wcFanSpeed  = this._client.getWaterCoolerFanSpeed();
-            s.wcPumpLevel = this._client.getWaterCoolerPumpLevel();
-        }
-
-        this._updateDashboard();
+        return this._readState('metrics', () => Promise.all([
+            this._client.getCpuTemperature(),
+            this._client.getGpuTemperature(),
+            this._client.getCpuFrequency(),
+            this._client.getGpuFrequency(),
+            this._client.getCpuPower(),
+            this._client.getGpuPower(),
+            this._client.getFanSpeedRPM(),
+            this._client.getGpuFanSpeedRPM(),
+            this._client.getFanSpeedPercent(),
+            this._client.getGpuFanSpeedPercent(),
+            this._client.getWaterCoolerFanSpeed(),
+            this._client.getWaterCoolerPumpLevel()
+        ]), ([cpuTemp, gpuTemp, cpuFreq, gpuFreq, cpuPower, gpuPower, cpuFanRPM, gpuFanRPM, cpuFanPct, gpuFanPct, wcFanSpeed, wcPumpLevel]) => {
+            Object.assign(this._state, {cpuTemp, gpuTemp, cpuFreq, gpuFreq, cpuPower, gpuPower, cpuFanRPM, gpuFanRPM, cpuFanPct, gpuFanPct, wcFanSpeed, wcPumpLevel});
+            this._updateDashboard();
+        });
     }
 
     _pollSlowState() {
-        if (!this._client.connected) return;
-        const s = this._state;
+        if (!this._capabilitiesLoaded) this._loadCapabilities();
+        if (!this._profilesLoaded) this._loadProfiles();
+        return this._readState('slow', () => Promise.all([
+            this._client.getActiveProfileJSON(),
+            this._client.getPowerState(),
+            this._client.getWebcamEnabled(),
+            this._client.getFnLock(),
+            this._client.getDisplayBrightness(),
+            this._client.isWaterCoolerEnabled()
+        ]), ([ap, ps, webcam, fn, br, wcEn]) => {
+            const s = this._state;
 
-        // Active profile
-        const ap = this._client.getActiveProfileJSON();
-        if (ap) {
-            try {
-                const obj = JSON.parse(ap);
-                const newId = obj.id ?? '';
-                if (newId !== s.activeProfileId) {
-                    s.activeProfileId = newId;
-                    s.activeProfileName = obj.name ?? '';
-                    s.activeProfileFanId = obj.fan?.fanProfile ?? '';
-                    // Extract keyboard profile reference
-                    const kbRef = obj.selectedKeyboardProfile ?? '';
-                    s.activeKeyboardProfileId = this._resolveKeyboardProfileId(kbRef);
-                    this._rebuildProfileButtons();
-                    this._rebuildFanProfileButtons();
-                    this._rebuildKeyboardProfileButtons();
-                }
-                const oldAutoControl = s.wcAutoControl;
-                s.wcAutoControl = obj.fan?.autoControlWC ?? true;
-                if (oldAutoControl !== s.wcAutoControl) {
+            // Active profile
+            if (ap) {
+                try {
+                    const obj = JSON.parse(ap);
+                    const newId = obj.id ?? '';
+                    if (newId !== s.activeProfileId) {
+                        s.activeProfileId = newId;
+                        s.activeProfileName = obj.name ?? '';
+                        s.activeProfileFanId = obj.fan?.fanProfile ?? '';
+                        // Extract keyboard profile reference
+                        const kbRef = obj.selectedKeyboardProfile ?? '';
+                        s.activeKeyboardProfileId = this._resolveKeyboardProfileId(kbRef);
+                        this._rebuildProfileButtons();
+                        this._rebuildFanProfileButtons();
+                        this._rebuildKeyboardProfileButtons();
+                    }
+                    const oldAutoControl = s.wcAutoControl;
+                    s.wcAutoControl = obj.fan?.autoControlWC ?? true;
+                    if (oldAutoControl !== s.wcAutoControl) {
+                        this._updateWaterCoolerControlsEnabled();
+                    }
+                } catch { /* ignore */ }
+            }
+
+            // Power state
+            if (ps && ps !== s.powerState) {
+                s.powerState = ps;
+                this._powerLabel.text = mapPowerState(ps);
+                // Derive wcConnected from power state (matches KDE applet)
+                const wasWcConnected = s.wcConnected;
+                s.wcConnected = (mapPowerState(ps) === 'AC w/ Water Cooler');
+                if (s.wcConnected !== wasWcConnected) {
                     this._updateWaterCoolerControlsEnabled();
                 }
-            } catch { /* ignore */ }
-        }
-
-        // Power state
-        const ps = this._client.getPowerState();
-        if (ps && ps !== s.powerState) {
-            s.powerState = ps;
-            this._powerLabel.text = mapPowerState(ps);
-            // Derive wcConnected from power state (matches KDE applet)
-            const wasWcConnected = s.wcConnected;
-            s.wcConnected = (mapPowerState(ps) === 'AC w/ Water Cooler');
-            if (s.wcConnected !== wasWcConnected) {
-                this._updateWaterCoolerControlsEnabled();
             }
-        }
 
-        // Hardware toggles
-        const webcam = this._client.getWebcamEnabled();
-        if (webcam !== s.webcamEnabled) {
-            s.webcamEnabled = webcam;
-            this._webcamSwitch.checked = webcam;
-            this._webcamSwitch.label = webcam ? 'ON' : 'OFF';
-        }
-
-        const fn = this._client.getFnLock();
-        if (fn !== s.fnLock) {
-            s.fnLock = fn;
-            this._fnLockSwitch.checked = fn;
-            this._fnLockSwitch.label = fn ? 'ON' : 'OFF';
-        }
-
-        const br = this._client.getDisplayBrightness();
-        if (br !== s.displayBrightness) {
-            s.displayBrightness = br;
-            this._brightnessSlider.value = br / 100;
-            this._brightnessValueLabel.text = `${br}%`;
-        }
-
-        // Water cooler
-        if (s.waterCoolerSupported) {
-            const wcEn = this._client.isWaterCoolerEnabled();
-            if (wcEn !== s.wcEnabled) {
-                s.wcEnabled = wcEn;
-                this._wcEnableSwitch.checked = wcEn;
-                this._wcEnableSwitch.label = wcEn ? 'ON' : 'OFF';
+            // Hardware toggles
+            if (webcam !== null && webcam !== s.webcamEnabled) {
+                s.webcamEnabled = webcam;
+                this._webcamSwitch.checked = webcam;
+                this._webcamSwitch.label = webcam ? 'ON' : 'OFF';
             }
-        }
+
+            if (fn !== null && fn !== s.fnLock) {
+                s.fnLock = fn;
+                this._fnLockSwitch.checked = fn;
+                this._fnLockSwitch.label = fn ? 'ON' : 'OFF';
+            }
+
+            if (br !== null && br !== s.displayBrightness) {
+                s.displayBrightness = br;
+                this._brightnessSlider.value = br / 100;
+                this._brightnessValueLabel.text = `${br}%`;
+            }
+
+            // Water cooler
+            if (s.waterCoolerSupported) {
+                    if (wcEn !== null && wcEn !== s.wcEnabled) {
+                    s.wcEnabled = wcEn;
+                    this._wcEnableSwitch.checked = wcEn;
+                    this._wcEnableSwitch.label = wcEn ? 'ON' : 'OFF';
+                }
+            }
+        });
     }
 
     // Dashboard update
@@ -1130,6 +1188,9 @@ class UccIndicator extends PanelMenu.Button {
     }
 
     destroy() {
+        this._destroyed = true;
+        this._connectionGeneration++;
+        this._pendingReads.clear();
         this._stopTimers();
         this._stopUccrcMonitor();
         this._client?.destroy();

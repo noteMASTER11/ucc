@@ -19,6 +19,7 @@
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QJsonArray>
+#include <QDBusArgument>
 
 namespace ucc
 {
@@ -28,9 +29,9 @@ SystemMonitor::SystemMonitor( QObject *parent )
   , m_client( std::make_unique< UccdClient >( this ) )
   , m_updateTimer( new QTimer( this ) )
 {
-  // Update metrics every 500ms when active
+  // Refresh visible metrics every two seconds; all bus reads are asynchronous.
   connect( m_updateTimer, &QTimer::timeout, this, &SystemMonitor::updateMetrics );
-  m_updateTimer->setInterval( 500 );
+  m_updateTimer->setInterval( 2000 );
 
   // Load charging capabilities (these don't change at runtime)
   initializeChargingState();
@@ -51,267 +52,83 @@ SystemMonitor::SystemMonitor( QObject *parent )
 
 SystemMonitor::~SystemMonitor() = default;
 
+namespace {
+QVariantMap decodeMap(const QVariant &value) {
+  return value.canConvert<QDBusArgument>()
+    ? qdbus_cast<QVariantMap>(value.value<QDBusArgument>()) : value.toMap();
+}
+int fanValue(const QVariant &value, const QString &key) {
+  const auto inner = decodeMap(decodeMap(value).value(key));
+  return inner.value("timestamp").toLongLong() > 0 ? inner.value("data", -1).toInt() : -1;
+}
+}
+
 void SystemMonitor::updateMetrics()
 {
-  // Get CPU Temperature
-  {
-    QString cpuTemp = "--";
-
-    if ( auto temp = m_client->getCpuTemperature() )
-    {
-      cpuTemp = QString::number( *temp ) + "°C";
+  if (!m_monitoringActive || m_metricsPending) return;
+  m_metricsPending = true;
+  const auto generation = m_monitorGeneration;
+  const bool controls = !m_controlsAge.isValid() || m_controlsAge.elapsed() >= 10000;
+  if (controls) m_controlsAge.restart();
+  m_client->requestMonitoringSnapshot(controls, [this, generation](const QVariantMap &snapshot) {
+    m_metricsPending = false;
+    if (!m_monitoringActive || generation != m_monitorGeneration || snapshot.isEmpty()) return;
+    const auto json = [&snapshot](const QString &method) {
+      return QJsonDocument::fromJson(snapshot.value(method).toString().toUtf8()).object();
+    };
+    const auto gpu = json("GetDGpuInfoValuesJSON");
+    const auto igpu = json("GetIGpuInfoValuesJSON");
+    const auto cpu = json("GetCpuPowerValuesJSON");
+    const auto numeric = [](const QJsonObject &object, const char *key) {
+      const auto value = object.value(QLatin1String(key));
+      return value.isDouble() ? value.toDouble() : -1.0;
+    };
+    const auto fallback = [](double first, double second) { return first >= 0 ? first : second; };
+    const auto formatted = [](double value, const QString &unit, int precision = 0) {
+      return value < 0 ? QString("--") : QString::number(value, 'f', precision) + unit;
+    };
+    const auto setText = [this](QString &field, const QString &value, auto changed) {
+      if (field != value) { field = value; (this->*changed)(); }
+    };
+    const auto setInt = [this](int &field, int value, auto changed) {
+      if (field != value) { field = value; (this->*changed)(); }
+    };
+    const auto cpuFan = snapshot.value("GetFanDataCPU");
+    const int gpu1 = fanValue(snapshot.value("GetFanDataGPU1"), "speed");
+    const int gpu2 = fanValue(snapshot.value("GetFanDataGPU2"), "speed");
+    const int gpuFan = gpu1 < 0 ? gpu2 : gpu2 < 0 ? gpu1 : (gpu1 + gpu2) / 2;
+    setText(m_cpuTemp, formatted(fanValue(cpuFan,"temp"), "°C"), &SystemMonitor::cpuTempChanged);
+    setText(m_cpuFrequency, formatted(snapshot.value("GetCpuFrequencyMHz",-1).toInt()," MHz"), &SystemMonitor::cpuFrequencyChanged);
+    setText(m_cpuPower, formatted(numeric(cpu,"powerDraw")," W",1), &SystemMonitor::cpuPowerChanged);
+    setText(m_gpuTemp, formatted(fallback(numeric(gpu,"temp"),numeric(igpu,"temp")),"°C"), &SystemMonitor::gpuTempChanged);
+    setText(m_gpuFrequency, formatted(fallback(numeric(gpu,"coreFrequency"),numeric(gpu,"coreFreq"))," MHz"), &SystemMonitor::gpuFrequencyChanged);
+    setText(m_gpuPower, formatted(fallback(numeric(gpu,"powerDraw"),numeric(igpu,"powerDraw"))," W",1), &SystemMonitor::gpuPowerChanged);
+    setText(m_iGpuFrequency, formatted(numeric(igpu,"coreFrequency")," MHz"), &SystemMonitor::iGpuFrequencyChanged);
+    setText(m_iGpuPower, formatted(numeric(igpu,"powerDraw")," W",1), &SystemMonitor::iGpuPowerChanged);
+    setText(m_iGpuTemp, formatted(numeric(igpu,"temp"),"°C"), &SystemMonitor::iGpuTempChanged);
+    setText(m_fanSpeed, formatted(fanValue(cpuFan,"speed")," %"), &SystemMonitor::fanSpeedChanged);
+    setText(m_gpuFanSpeed, formatted(gpuFan," %"), &SystemMonitor::gpuFanSpeedChanged);
+    setInt(m_dGpuComputeUtil, gpu.value("computeUtilPct").toInt(-1), &SystemMonitor::dGpuComputeUtilChanged);
+    setInt(m_dGpuMemoryUtil, gpu.value("memoryUtilPct").toInt(-1), &SystemMonitor::dGpuMemoryUtilChanged);
+    setInt(m_dGpuPstate, gpu.value("currentPstate").toInt(-1), &SystemMonitor::dGpuPstateChanged);
+    setInt(m_dGpuGrClockOffset, gpu.value("grClockOffsetMHz").toInt(-999), &SystemMonitor::dGpuGrClockOffsetChanged);
+    setInt(m_dGpuMemClockOffset, gpu.value("memClockOffsetMHz").toInt(-999), &SystemMonitor::dGpuMemClockOffsetChanged);
+    setText(m_waterCoolerFanSpeed, formatted(snapshot.value("GetWaterCoolerFanSpeed",-1).toInt()," %"), &SystemMonitor::waterCoolerFanSpeedChanged);
+    const int pump = snapshot.value("GetWaterCoolerPumpLevel",-1).toInt();
+    const QStringList levels = {"High", "Max", "Low", "Med", "Off"};
+    setText(m_waterCoolerPumpLevel, levels.value(pump,"--"), &SystemMonitor::waterCoolerPumpLevelChanged);
+    if (snapshot.contains("GetDisplayBrightness"))
+      setInt(m_displayBrightness, snapshot.value("GetDisplayBrightness").toInt(), &SystemMonitor::displayBrightnessChanged);
+    if (snapshot.contains("GetWebcamSWStatus")) {
+      const bool value = snapshot.value("GetWebcamSWStatus").toBool();
+      if (value != m_webcamEnabled) { m_webcamEnabled = value; emit webcamEnabledChanged(); }
     }
-
-    if ( m_cpuTemp != cpuTemp )
-    {
-      m_cpuTemp = cpuTemp;
-      emit cpuTempChanged();
+    if (snapshot.contains("GetFnLockStatus")) {
+      const bool value = snapshot.value("GetFnLockStatus").toBool();
+      if (value != m_fnLock) { m_fnLock = value; emit fnLockChanged(); }
     }
-  }
-
-  // Get CPU Frequency
-  {
-    QString cpuFreq = "--";
-
-    if ( auto freq = m_client->getCpuFrequency() )
-    {
-      cpuFreq = QString::number( *freq ) + " MHz";
-    }
-
-    if ( m_cpuFrequency != cpuFreq )
-    {
-      m_cpuFrequency = cpuFreq;
-      emit cpuFrequencyChanged();
-    }
-  }
-
-  // Get CPU Power
-  {
-    QString cpuPow = "--";
-
-    if ( auto power = m_client->getCpuPower() )
-    {
-      cpuPow = QString::number( *power, 'f', 1 ) + " W";
-    }
-
-    if ( m_cpuPower != cpuPow )
-    {
-      m_cpuPower = cpuPow;
-      emit cpuPowerChanged();
-    }
-  }
-
-  // Get GPU Temperature
-  {
-    QString gpuTemp = "--";
-
-    if ( auto temp = m_client->getGpuTemperature() )
-    {
-      gpuTemp = QString::number( *temp ) + "°C";
-    }
-    if ( m_gpuTemp != gpuTemp )
-    {
-      m_gpuTemp = gpuTemp;
-      emit gpuTempChanged();
-    }
-  }
-
-  // Get GPU Frequency
-  {
-    QString gpuFreq = "--";
-
-    if ( auto freq = m_client->getGpuFrequency() )
-    {
-      gpuFreq = QString::number( *freq ) + " MHz";
-    }
-
-    if ( m_gpuFrequency != gpuFreq )
-    {
-      m_gpuFrequency = gpuFreq;
-      emit gpuFrequencyChanged();
-    }
-  }
-
-  // Get GPU Power
-  {
-    QString gpuPow = "--";
-
-    if ( auto power = m_client->getGpuPower() )
-    {
-      gpuPow = QString::number( *power, 'f', 1 ) + " W";
-    }
-    if ( m_gpuPower != gpuPow )
-    {
-      m_gpuPower = gpuPow;
-      emit gpuPowerChanged();
-    }
-  }
-
-  // Get iGPU Frequency
-  {
-    QString iGpuFreq = "--";
-
-    if ( auto freq = m_client->getIGpuFrequency(); freq && *freq > 0 )
-      iGpuFreq = QString::number( *freq ) + " MHz";
-
-    if ( m_iGpuFrequency != iGpuFreq )
-    {
-      m_iGpuFrequency = iGpuFreq;
-      emit iGpuFrequencyChanged();
-    }
-  }
-
-  // Get iGPU Power
-  {
-    QString iGpuPow = "--";
-
-    if ( auto power = m_client->getIGpuPower(); power && *power > 0.0 )
-      iGpuPow = QString::number( *power, 'f', 1 ) + " W";
-
-    if ( m_iGpuPower != iGpuPow )
-    {
-      m_iGpuPower = iGpuPow;
-      emit iGpuPowerChanged();
-    }
-  }
-
-  // Get iGPU Temperature
-  {
-    QString iGpuTmp = "--";
-
-    if ( auto temp = m_client->getIGpuTemperature(); temp && *temp > 0 )
-      iGpuTmp = QString::number( *temp ) + "°C";
-
-    if ( m_iGpuTemp != iGpuTmp )
-    {
-      m_iGpuTemp = iGpuTmp;
-      emit iGpuTempChanged();
-    }
-  }
-
-  // Get Fan Speed (percentage)
-  {
-    QString fanSpd = "--";
-
-    if ( auto pct = m_client->getFanSpeedPercent() )
-    {
-      fanSpd = QString::number( *pct ) + " %";
-    }
-
-    if ( m_fanSpeed != fanSpd )
-    {
-      m_fanSpeed = fanSpd;
-      emit fanSpeedChanged();
-    }
-  }
-
-  // Get GPU Fan Speed (percentage)
-  {
-    QString fanSpd = "--";
-
-    if ( auto pct = m_client->getGpuFanSpeedPercent() )
-    {
-      fanSpd = QString::number( *pct ) + " %";
-    }
-    if ( m_gpuFanSpeed != fanSpd )
-    {
-      m_gpuFanSpeed = fanSpd;
-      emit gpuFanSpeedChanged();
-    }
-  }
-
-  // Get dGPU extended metrics (NVIDIA-only; getters return nullopt when unavailable)
-  {
-    int val = -1;
-    if ( auto v = m_client->getDGpuComputeUtilPct() ) val = *v;
-    if ( m_dGpuComputeUtil != val ) { m_dGpuComputeUtil = val; emit dGpuComputeUtilChanged(); }
-  }
-  {
-    int val = -1;
-    if ( auto v = m_client->getDGpuMemoryUtilPct() ) val = *v;
-    if ( m_dGpuMemoryUtil != val ) { m_dGpuMemoryUtil = val; emit dGpuMemoryUtilChanged(); }
-  }
-  {
-    int val = -1;
-    if ( auto v = m_client->getDGpuCurrentPstate() ) val = *v;
-    if ( m_dGpuPstate != val ) { m_dGpuPstate = val; emit dGpuPstateChanged(); }
-  }
-  {
-    int val = -999;
-    if ( auto v = m_client->getDGpuGrClockOffsetMHz() ) val = *v;
-    if ( m_dGpuGrClockOffset != val ) { m_dGpuGrClockOffset = val; emit dGpuGrClockOffsetChanged(); }
-  }
-  {
-    int val = -999;
-    if ( auto v = m_client->getDGpuMemClockOffsetMHz() ) val = *v;
-    if ( m_dGpuMemClockOffset != val ) { m_dGpuMemClockOffset = val; emit dGpuMemClockOffsetChanged(); }
-  }
-
-  // Get water cooler fan speed (percentage) if available via uccd
-  {
-    QString wcFan = "--";
-    if ( auto pct = m_client->getWaterCoolerFanSpeed() )
-    {
-      wcFan = QString::number( *pct ) + " %";
-    }
-
-    if ( m_waterCoolerFanSpeed != wcFan )
-    {
-      m_waterCoolerFanSpeed = wcFan;
-      emit waterCoolerFanSpeedChanged();
-    }
-  }
-
-  // Get water cooler pump level/voltage if available via uccd
-  {
-    QString wcPump = "--";
-    if ( auto level = m_client->getWaterCoolerPumpLevel() )
-    {
-      wcPump = *level == static_cast< int >( ucc::PumpVoltage::V7 )  ? "Low" :
-               *level == static_cast< int >( ucc::PumpVoltage::V8 )  ? "Med" :
-               *level == static_cast< int >( ucc::PumpVoltage::V11 ) ? "High" :
-               *level == static_cast< int >( ucc::PumpVoltage::V12 ) ? "Max" :
-               *level == static_cast< int >( ucc::PumpVoltage::Off ) ? "Off" : "--";
-    }
-
-    if ( m_waterCoolerPumpLevel != wcPump )
-    {
-      m_waterCoolerPumpLevel = wcPump;
-      emit waterCoolerPumpLevelChanged();
-    }
-  }
-
-  // Get display brightness
-
-  if ( auto brightness = m_client->getDisplayBrightness() )
-  {
-
-    if ( m_displayBrightness != *brightness )
-    {
-      m_displayBrightness = *brightness;
-      emit displayBrightnessChanged();
-    }
-  }
-
-  // Get webcam status
-  if ( auto enabled = m_client->getWebcamEnabled() )
-  {
-    if ( m_webcamEnabled != *enabled )
-    {
-      m_webcamEnabled = *enabled;
-      emit webcamEnabledChanged();
-    }
-  }
-
-  // Get Fn lock status
-  if ( auto fnLock = m_client->getFnLock() )
-  {
-    if ( m_fnLock != *fnLock )
-    {
-      m_fnLock = *fnLock;
-      emit fnLockChanged();
-    }
-  }
+    emit metricsUpdated();
+  });
 }
 
 void SystemMonitor::setDisplayBrightness( int brightness )
@@ -500,30 +317,16 @@ void SystemMonitor::setMonitoringActive( bool active )
 {
   if ( m_monitoringActive != active )
   {
+    ++m_monitorGeneration;
     m_monitoringActive = active;
     emit monitoringActiveChanged();
 
     if ( active )
     {
-      // Start monitoring - do immediate update and start timer
-      qDebug() << "[SystemMonitor] Starting monitoring with 500ms interval";
-
-      // Force refresh all values by clearing them first
-      m_cpuTemp = "";
-      m_cpuFrequency = "";
-      m_cpuPower = "";
-      m_gpuTemp = "";
-      m_gpuFrequency = "";
-      m_gpuPower = "";
-      m_fanSpeed = "";
-      m_gpuFanSpeed = "";
-      m_waterCoolerFanSpeed = "";
-      m_waterCoolerPumpLevel = "";
-
-      // Start timer first - this gives uccd time to collect initial sensor data
-      // The first update will happen after 500ms
+      qDebug() << "[SystemMonitor] Starting asynchronous monitoring at 2000ms";
+      // Preserve the last snapshot while waiting for the next visible refresh.
       m_updateTimer->start();
-      qDebug() << "[SystemMonitor] Timer started, first update in 500ms. Timer active:" << m_updateTimer->isActive();
+      qDebug() << "[SystemMonitor] Timer started, first update in 2000ms. Timer active:" << m_updateTimer->isActive();
     }
     else
     {

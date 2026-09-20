@@ -91,6 +91,8 @@ protected:
 #include <QJsonObject>
 #include <QDebug>
 #include <QPainter>
+#include <QShowEvent>
+#include <QHideEvent>
 
 namespace ucc
 {
@@ -163,12 +165,41 @@ MainWindow::MainWindow( QWidget *parent )
   m_initializing = false;
 
   // Start monitoring since dashboard is the first tab
-  m_systemMonitor->setMonitoringActive( true );
+  updateMonitoringActivity();
 }
 
 MainWindow::~MainWindow()
 {
   // Destructor
+}
+
+void MainWindow::showEvent(QShowEvent *event)
+{
+  QMainWindow::showEvent(event);
+  updateMonitoringActivity();
+}
+
+void MainWindow::hideEvent(QHideEvent *event)
+{
+  QMainWindow::hideEvent(event);
+  updateMonitoringActivity();
+}
+
+void MainWindow::changeEvent(QEvent *event)
+{
+  QMainWindow::changeEvent(event);
+  if (event->type() == QEvent::WindowStateChange) updateMonitoringActivity();
+}
+
+void MainWindow::updateMonitoringActivity()
+{
+  if (!m_tabs || !m_systemMonitor) return;
+  const bool visible = isVisible() && !isMinimized();
+  const int index = m_tabs->currentIndex();
+  const int fanIndex = m_fanControlTab ? m_tabs->indexOf(m_fanControlTab) : -1;
+  m_systemMonitor->setMonitoringActive(visible && (index == 0 || index == fanIndex));
+  if (m_monitorTab)
+    m_monitorTab->setMonitoringActive(visible && index == m_tabs->indexOf(m_monitorTab));
 }
 
 void MainWindow::setupUI()
@@ -1164,17 +1195,7 @@ void MainWindow::updateFanCrosshairs()
 void MainWindow::onTabChanged( int index )
 {
   const int fanTabIndex = m_fanControlTab ? m_tabs->indexOf( m_fanControlTab ) : -1;
-  const int monitorTabIndex = m_monitorTab ? m_tabs->indexOf( m_monitorTab ) : -1;
-
-  // Enable monitoring when dashboard (0) or fan control tab is visible
-  bool needsMonitoring = ( index == 0 || index == fanTabIndex );
-  qDebug() << "Tab changed to" << index << "- Monitoring active:" << needsMonitoring
-           << "(fan tab =" << fanTabIndex << ")";
-  m_systemMonitor->setMonitoringActive( needsMonitoring );
-
-  // Activate / deactivate the Monitor tab's incremental fetch
-  if ( m_monitorTab )
-    m_monitorTab->setMonitoringActive( index == monitorTabIndex );
+  updateMonitoringActivity();
 
   // Update or clear fan curve crosshairs
   if ( index == fanTabIndex )

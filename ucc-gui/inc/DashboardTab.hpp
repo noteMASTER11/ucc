@@ -92,7 +92,7 @@ namespace ucc
     SystemMonitor *m_systemMonitor;
     ProfileManager *m_profileManager;
     // DBus interface for water cooler status
-    QDBusInterface *m_waterCoolerDbus = nullptr;
+    bool m_waterCoolerReadPending = false;
     QTimer *m_waterCoolerPollTimer = nullptr;
 
     // Dashboard widgets

@@ -17,9 +17,10 @@
 #include <QCoreApplication>
 #include <QMessageBox>
 #include <QTextStream>
-#include <QThread>
+#include <QTimer>
 #include <cstdlib>
 #include "MainWindow.hpp"
+#include "GuiInstance.hpp"
 #include "SystemMonitor.hpp"
 #include "UccdClient.hpp"
 #include "version.h"
@@ -48,9 +49,15 @@ int main( int argc, char *argv[] )
     ucc::SystemMonitor monitor;
     QTextStream out( stdout );
 
-    for ( int i = 0; i < displayCount; ++i )
-    {
-      monitor.refreshAll();
+    QTimer watchdog;
+    watchdog.setSingleShot(true);
+    watchdog.setInterval(4000);
+    QObject::connect(&watchdog, &QTimer::timeout, &app, [&app] {
+      QTextStream(stderr) << "Timed out waiting for UCC metrics" << Qt::endl;
+      app.exit(2);
+    });
+    int received = 0;
+    QObject::connect(&monitor, &ucc::SystemMonitor::metricsUpdated, &app, [&] {
       out << "cpu_temp=" << monitor.cpuTemp()
           << " cpu_freq=" << monitor.cpuFrequency()
           << " cpu_power=" << monitor.cpuPower()
@@ -58,25 +65,27 @@ int main( int argc, char *argv[] )
           << " gpu_temp=" << monitor.gpuTemp()
           << " gpu_freq=" << monitor.gpuFrequency()
           << " gpu_power=" << monitor.gpuPower()
-          << " gpu_fan=" << monitor.gpuFanSpeed()
-          << Qt::endl;
-
-      QCoreApplication::processEvents();
-
-      if ( i < displayCount - 1 )
-      {
-        QThread::sleep( 1 );
-      }
-    }
-
-    return 0;
+          << " gpu_fan=" << monitor.gpuFanSpeed() << Qt::endl;
+      if (++received >= displayCount) app.quit();
+      else watchdog.start();
+    });
+    monitor.setMonitoringActive(true);
+    watchdog.start();
+    monitor.refreshAll();
+    return app.exec();
   }
 
   QApplication app( argc, argv );
+  app.setDesktopFileName("ucc-gui");
   app.setOrganizationName( "UniwillControlCenter" );
   app.setOrganizationDomain( "uniwill.local" );
   app.setApplicationName( "ucc-gui" );
   app.setApplicationVersion( UCC_VERSION_FULL );
+
+  ucc::GuiInstance instance;
+  const auto instanceResult = instance.startOrActivate();
+  if (instanceResult != ucc::GuiInstance::Result::Primary)
+    return instanceResult == ucc::GuiInstance::Result::ActivatedExisting ? 0 : 1;
 
   // ensure window decorations and the application use the theme icon we installed
   app.setWindowIcon( QIcon::fromTheme( "ucc-gui" ) );
@@ -96,6 +105,7 @@ int main( int argc, char *argv[] )
   }
 
   ucc::MainWindow window;
+  instance.setWindow(&window);
   window.show();
 
   return app.exec();

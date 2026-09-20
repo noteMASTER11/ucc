@@ -51,6 +51,8 @@ public:
   // System Information
   std::optional< std::string > getSystemInfoJSON();
   std::optional< bool > isDeviceSupported();
+  // One nonblocking read per source, shared by every metric in the GUI refresh.
+  void requestMonitoringSnapshot(bool includeControls, std::function<void(QVariantMap)> ready);
 
   // Profile Management
   std::optional< std::string > getDefaultProfilesJSON();

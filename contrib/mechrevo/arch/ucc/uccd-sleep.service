@@ -1,0 +1,13 @@
+[Unit]
+Description=Uniwill Control Center suspend and resume
+Before=sleep.target nvidia-suspend.service nvidia-hibernate.service
+StopWhenUnneeded=yes
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/bin/systemctl stop uccd.service
+ExecStop=/usr/bin/systemctl start uccd.service
+
+[Install]
+WantedBy=sleep.target

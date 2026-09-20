@@ -29,6 +29,8 @@ find_package( Qt6 REQUIRED COMPONENTS
 # Application sources
 set( UCC_GUI_SOURCES
   src/main.cpp
+  src/GuiInstance.cpp
+  inc/GuiInstance.hpp
   src/MainWindow.cpp
   inc/MainWindow.hpp
   src/FanControlTab.cpp

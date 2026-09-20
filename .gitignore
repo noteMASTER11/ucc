@@ -15,3 +15,11 @@ verify-build.sh
 
 # Claude Code session data
 .claude
+
+# Local verification and Arch package artifacts
+/build-system/
+/contrib/mechrevo/arch/*/src/
+/contrib/mechrevo/arch/*/pkg/
+/contrib/mechrevo/arch/drivers/tuxedo-drivers/
+*.pkg.tar.*
+__pycache__/

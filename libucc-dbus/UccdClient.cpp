@@ -26,9 +26,21 @@
 #include <QThread>
 #include <QFile>
 #include <QVariantMap>
+#include "AsyncRead.hpp"
 
 namespace ucc
 {
+
+void UccdClient::requestMonitoringSnapshot(bool includeControls, std::function<void(QVariantMap)> ready)
+{
+  if (!m_connected) { ready({}); return; }
+  QStringList methods = {"GetFanDataCPU", "GetFanDataGPU1", "GetFanDataGPU2",
+    "GetCpuFrequencyMHz", "GetCpuPowerValuesJSON", "GetDGpuInfoValuesJSON",
+    "GetIGpuInfoValuesJSON", "GetWaterCoolerFanSpeed", "GetWaterCoolerPumpLevel"};
+  if (includeControls)
+    methods << "GetDisplayBrightness" << "GetWebcamSWStatus" << "GetFnLockStatus";
+  readUccdBatch(this, methods, std::move(ready));
+}
 
 UccdClient::UccdClient( QObject *parent )
   : QObject( parent )
@@ -223,6 +235,15 @@ std::optional< std::string > UccdClient::getSystemInfoJSON()
 {
   if ( auto result = callMethod< QString >( "GetSystemInfoJSON" ) )
   {
+    // Preserve OEM identity even when a still-running older daemon reports the
+    // compatibility alias as its model. This only changes presentation.
+    auto object = QJsonDocument::fromJson(result->toUtf8()).object();
+    if (object.value("sysVendor").toString().compare("MECHREVO", Qt::CaseInsensitive) == 0 &&
+        !object.value("boardName").toString().isEmpty()) {
+      object["manufacturer"] = "MECHREVO";
+      object["laptopModel"] = "MECHREVO " + object.value("boardName").toString();
+      return QJsonDocument(object).toJson(QJsonDocument::Compact).toStdString();
+    }
     return result->toStdString();
   }
   return std::nullopt;

@@ -277,6 +277,9 @@ private:
   // State
   UccdClient *m_client = nullptr;
   QTimer      m_fetchTimer;
+  bool        m_monitoringActive = false;
+  bool        m_fetchPending = false;
+  unsigned    m_fetchGeneration = 0;
   qint64      m_lastTimestamp = 0;    ///< Last fetched timestamp (ms since epoch)
   int         m_windowSeconds = 300;  ///< Visible time window (default 5 min)
   bool        m_unifiedSeriesActive = false;  ///< Shadow series created?

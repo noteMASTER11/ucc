@@ -4,6 +4,10 @@ project(uccd VERSION ${CMAKE_PROJECT_VERSION})
 # Add 3rdparty
 add_subdirectory(3rdparty)
 
+add_executable(ucc-hardware src/hardware-helper.cpp)
+target_link_libraries(ucc-hardware PRIVATE tuxedo_io_lib)
+install(TARGETS ucc-hardware RUNTIME DESTINATION lib/ucc)
+
 # Set default build type to RelWithDebInfo if not specified
 if(NOT CMAKE_BUILD_TYPE)
   set(CMAKE_BUILD_TYPE RelWithDebInfo CACHE STRING "Build type" FORCE)

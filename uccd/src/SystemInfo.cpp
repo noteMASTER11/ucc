@@ -353,6 +353,9 @@ LaptopManufacturer classifyManufacturer( const std::string &sysVendor,
     return h.find( n ) != std::string::npos;
   };
 
+  if ( containsCI( sysVendor, "MECHREVO" ) || containsCI( boardVendor, "MECHREVO" ) )
+    return LaptopManufacturer::MECHREVO;
+
   if ( containsCI( sysVendor, "TUXEDO" ) || containsCI( boardVendor, "TUXEDO" ) )
     return LaptopManufacturer::TUXEDO;
 
@@ -378,6 +381,7 @@ std::string manufacturerToString( LaptopManufacturer m )
     case LaptopManufacturer::XMG:          return "XMG";
     case LaptopManufacturer::PCSpecialist: return "PCSpecialist";
     case LaptopManufacturer::Uniwill:      return "Uniwill";
+    case LaptopManufacturer::MECHREVO:     return "MECHREVO";
     default:                               return "Unknown";
   }
 }
@@ -463,6 +467,12 @@ std::string buildLaptopModel( std::optional< UniwillDeviceID > deviceId,
                               LaptopManufacturer manufacturer,
                               const std::string &sysVendor )
 {
+  // A capabilities alias describes the controller, not the laptop's branding.
+  if ( manufacturer == LaptopManufacturer::MECHREVO )
+  {
+    const auto board = readFile( "/sys/class/dmi/id/board_name" );
+    if ( !board.empty() ) return "MECHREVO " + board;
+  }
   if ( deviceId.has_value() )
   {
     if ( auto it = deviceInfoMap.find( *deviceId ); it != deviceInfoMap.end() )

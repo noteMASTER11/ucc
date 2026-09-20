@@ -28,7 +28,7 @@ const OBJECT_PATH = '/com/uniwill/uccd';
 const IFACE_NAME  = 'com.uniwill.uccd';
 
 /**
- * Synchronous D-Bus wrapper around uccd.
+ * Asynchronous D-Bus wrapper; daemon delays must never block GNOME Shell.
  *
  * Connection state is tracked via Gio.bus_watch_name_on_connection().
  */
@@ -38,6 +38,10 @@ export class UccdClient {
         this._connected = false;
         this._watchId = 0;
         this._onConnectionChanged = null;
+        this._cancellable = new Gio.Cancellable();
+        this._generation = 0;
+        this._pendingReads = new Map();
+        this._pendingWrites = new Map();
     }
 
     get connected() { return this._connected; }
@@ -50,51 +54,96 @@ export class UccdClient {
         this._onConnectionChanged = cb;
         this._watchId = Gio.bus_watch_name_on_connection(
             this._bus, BUS_NAME, Gio.BusNameWatcherFlags.NONE,
-            () => { this._connected = true;  cb?.(true);  },
-            () => { this._connected = false; cb?.(false); },
+            () => {
+                this._cancellable.cancel();
+                this._cancellable = new Gio.Cancellable();
+                this._generation++;
+                this._connected = true;
+                cb?.(true);
+            },
+            () => {
+                this._connected = false;
+                this._generation++;
+                this._cancellable.cancel();
+                cb?.(false);
+            },
         );
     }
 
     // Low-level helpers
 
-    /** Call a D-Bus method and return the first result value (or null). */
-    _call(method, args = null, signature = null) {
-        if (!this._connected) return null;
-        try {
-            const params = args !== null
-                ? new GLib.Variant(`(${signature})`, args)
-                : null;
-            const result = this._bus.call_sync(
-                BUS_NAME, OBJECT_PATH, IFACE_NAME,
-                method, params, null,
-                Gio.DBusCallFlags.NONE, 2000, null,
-            );
-            if (!result) return null;
-            const child = result.get_child_value(0);
-            return child.get_type_string() === 'v'
-                ? child.recursiveUnpack()
-                : child.recursiveUnpack();
-        } catch (_e) {
-            return null;
-        }
+    /** Return a promise; cancellation and daemon disappearance discard stale replies. */
+    _request(method, args, signature, voidResult = false) {
+        if (!this._connected) return Promise.resolve(voidResult ? false : null);
+        const cancellable = this._cancellable;
+        const generation = this._generation;
+        return new Promise(resolve => {
+            const failed = voidResult ? false : null;
+            try {
+                const params = args !== null
+                    ? new GLib.Variant(`(${signature})`, args) : null;
+                this._bus.call(
+                    BUS_NAME, OBJECT_PATH, IFACE_NAME, method, params, null,
+                    Gio.DBusCallFlags.NONE, 2000, cancellable,
+                    (connection, asyncResult) => {
+                        try {
+                            const result = connection.call_finish(asyncResult);
+                            if (!this._connected || generation !== this._generation ||
+                                cancellable.is_cancelled()) {
+                                resolve(failed);
+                                return;
+                            }
+                            const value = result && result.n_children() > 0
+                                ? result.get_child_value(0).recursiveUnpack() : null;
+                            resolve(voidResult ? value !== false : value);
+                        } catch (_e) { resolve(failed); }
+                    },
+                );
+            } catch (_e) { resolve(failed); }
+        });
     }
 
-    /** Call a void-returning method; returns true on success. */
+    _call(method, args = null, signature = null) {
+        if (args !== null) return this._request(method, args, signature);
+        const existing = this._pendingReads.get(method);
+        if (existing?.generation === this._generation) return existing.promise;
+        const entry = {generation: this._generation};
+        entry.promise = this._request(method, args, signature).finally(() => {
+            if (this._pendingReads.get(method) === entry) this._pendingReads.delete(method);
+        });
+        this._pendingReads.set(method, entry);
+        return entry.promise;
+    }
+
     _callVoid(method, args = null, signature = null) {
-        if (!this._connected) return false;
-        try {
-            const params = args !== null
-                ? new GLib.Variant(`(${signature})`, args)
-                : null;
-            this._bus.call_sync(
-                BUS_NAME, OBJECT_PATH, IFACE_NAME,
-                method, params, null,
-                Gio.DBusCallFlags.NONE, 2000, null,
-            );
-            return true;
-        } catch (_e) {
-            return false;
-        }
+        // Slider motion may outpace BLE/sysfs writes. Keep one request in flight
+        // and only its latest replacement; do not coalesce profile saves/actions.
+        if (!['SetDisplayBrightness', 'SetWaterCoolerFanSpeed'].includes(method))
+            return this._request(method, args, signature, true);
+        return new Promise(resolve => {
+            let state = this._pendingWrites.get(method);
+            if (state && state.generation === this._generation) {
+                state.next?.resolve(false); // superseded before it reached hardware
+                state.next = {args, signature, resolve};
+                return;
+            }
+            state?.next?.resolve(false);
+            state = {generation: this._generation, next: {args, signature, resolve}};
+            this._pendingWrites.set(method, state);
+            const drain = async () => {
+                while (state.next) {
+                    const command = state.next;
+                    state.next = null;
+                    if (state.generation !== this._generation || !this._connected) {
+                        command.resolve(false);
+                        break;
+                    }
+                    command.resolve(await this._request(method, command.args, command.signature, true));
+                }
+                if (this._pendingWrites.get(method) === state) this._pendingWrites.delete(method);
+            };
+            drain();
+        });
     }
 
     /**
@@ -104,8 +153,8 @@ export class UccdClient {
      * The daemon returns a{sv} -> { speed: a{sv}{timestamp:x, data:i},
      * temp: a{sv}{timestamp:x, data:i} }
      */
-    _readFanData(method, key) {
-        const outer = this._call(method);
+    async _readFanData(method, key) {
+        const outer = await this._call(method);
         if (!outer) return null;
         const inner = outer[key];
         if (!inner) return null;
@@ -116,8 +165,8 @@ export class UccdClient {
     }
 
     /** Parse a JSON-returning D-Bus method and extract a numeric key. */
-    _readJsonNum(method, key) {
-        const raw = this._call(method);
+    async _readJsonNum(method, key) {
+        const raw = await this._call(method);
         if (!raw) return null;
         try {
             const v = JSON.parse(raw)[key];
@@ -127,137 +176,139 @@ export class UccdClient {
 
     // Monitoring - fast poll (temperatures, frequencies, power, fans)
 
-    getCpuTemperature() {
-        return this._readFanData('GetFanDataCPU', 'temp') ?? -1;
+    async getCpuTemperature() {
+        return await this._readFanData('GetFanDataCPU', 'temp') ?? -1;
     }
 
-    getGpuTemperature() {
+    async getGpuTemperature() {
         // Prefer dGPU JSON, fall back to iGPU JSON
-        return this._readJsonNum('GetDGpuInfoValuesJSON', 'temp')
-            ?? this._readJsonNum('GetIGpuInfoValuesJSON', 'temp')
+        return await this._readJsonNum('GetDGpuInfoValuesJSON', 'temp')
+            ?? await this._readJsonNum('GetIGpuInfoValuesJSON', 'temp')
             ?? -1;
     }
 
-    getCpuFrequency() { return this._call('GetCpuFrequencyMHz') ?? -1; }
+    async getCpuFrequency() { return await this._call('GetCpuFrequencyMHz') ?? -1; }
 
-    getGpuFrequency() {
-        return this._readJsonNum('GetDGpuInfoValuesJSON', 'coreFrequency')
-            ?? this._readJsonNum('GetDGpuInfoValuesJSON', 'coreFreq')
+    async getGpuFrequency() {
+        return await this._readJsonNum('GetDGpuInfoValuesJSON', 'coreFrequency')
+            ?? await this._readJsonNum('GetDGpuInfoValuesJSON', 'coreFreq')
             ?? -1;
     }
 
-    getCpuPower() {
-        return this._readJsonNum('GetCpuPowerValuesJSON', 'powerDraw') ?? -1;
+    async getCpuPower() {
+        return await this._readJsonNum('GetCpuPowerValuesJSON', 'powerDraw') ?? -1;
     }
 
-    getGpuPower() {
-        return this._readJsonNum('GetDGpuInfoValuesJSON', 'powerDraw')
-            ?? this._readJsonNum('GetIGpuInfoValuesJSON', 'powerDraw')
+    async getGpuPower() {
+        return await this._readJsonNum('GetDGpuInfoValuesJSON', 'powerDraw')
+            ?? await this._readJsonNum('GetIGpuInfoValuesJSON', 'powerDraw')
             ?? -1;
     }
 
-    getFanSpeedRPM() {
-        const pct = this._readFanData('GetFanDataCPU', 'speed');
+    async getFanSpeedRPM() {
+        const pct = await this._readFanData('GetFanDataCPU', 'speed');
         return pct !== null ? pct * 60 : -1;
     }
 
-    getGpuFanSpeedRPM() {
-        const g1 = this._readFanData('GetFanDataGPU1', 'speed');
-        const g2 = this._readFanData('GetFanDataGPU2', 'speed');
+    async getGpuFanSpeedRPM() {
+        const g1 = await this._readFanData('GetFanDataGPU1', 'speed');
+        const g2 = await this._readFanData('GetFanDataGPU2', 'speed');
         if (g1 !== null && g2 !== null) return Math.round((g1 + g2) / 2) * 60;
         if (g1 !== null) return g1 * 60;
         if (g2 !== null) return g2 * 60;
         return -1;
     }
 
-    getFanSpeedPercent() {
-        return this._readFanData('GetFanDataCPU', 'speed') ?? -1;
+    async getFanSpeedPercent() {
+        return await this._readFanData('GetFanDataCPU', 'speed') ?? -1;
     }
 
-    getGpuFanSpeedPercent() {
-        const g1 = this._readFanData('GetFanDataGPU1', 'speed');
-        const g2 = this._readFanData('GetFanDataGPU2', 'speed');
+    async getGpuFanSpeedPercent() {
+        const g1 = await this._readFanData('GetFanDataGPU1', 'speed');
+        const g2 = await this._readFanData('GetFanDataGPU2', 'speed');
         if (g1 !== null && g2 !== null) return Math.round((g1 + g2) / 2);
         return g1 ?? g2 ?? -1;
     }
 
-    getWaterCoolerFanSpeed()  { return this._call('GetWaterCoolerFanSpeed')  ?? -1; }
-    getWaterCoolerPumpLevel() { return this._call('GetWaterCoolerPumpLevel') ?? -1; }
+    async getWaterCoolerFanSpeed()  { return await this._call('GetWaterCoolerFanSpeed')  ?? -1; }
+    async getWaterCoolerPumpLevel() { return await this._call('GetWaterCoolerPumpLevel') ?? -1; }
 
     // Slow poll - profiles, state, hardware toggles
 
-    getActiveProfileJSON()   { return this._call('GetActiveProfileJSON'); }
-    getPowerState()          { return this._call('GetPowerState'); }
-    getDefaultProfilesJSON() { return this._call('GetDefaultProfilesJSON'); }
-    getCustomProfilesJSON()  { return this._call('GetCustomProfilesJSON'); }
-    getFanProfileNames()     { return this._call('GetFanProfileNames'); }
+    async getActiveProfileJSON()   { return await this._call('GetActiveProfileJSON'); }
+    async getPowerState()          { return await this._call('GetPowerState'); }
+    async getDefaultProfilesJSON() { return await this._call('GetDefaultProfilesJSON'); }
+    async getCustomProfilesJSON()  { return await this._call('GetCustomProfilesJSON'); }
+    async getFanProfileNames()     { return await this._call('GetFanProfileNames'); }
 
-    getCustomFanProfiles()      { return this._call('GetCustomFanProfiles'); }
-    getCustomKeyboardProfiles() { return this._call('GetCustomKeyboardProfiles'); }
+    async getCustomFanProfiles()      { return await this._call('GetCustomFanProfilesJSON'); }
+    async getCustomKeyboardProfiles() { return await this._call('GetCustomKeyboardProfilesJSON'); }
 
-    getWebcamEnabled()      { return this._call('GetWebcamSWStatus') ?? false; }
-    getFnLock()             { return this._call('GetFnLockStatus') ?? false; }
-    getDisplayBrightness()  { return this._call('GetDisplayBrightness') ?? 50; }
+    async getWebcamEnabled()      { return await this._call('GetWebcamSWStatus'); }
+    async getFnLock()             { return await this._call('GetFnLockStatus'); }
+    async getDisplayBrightness()  { return await this._call('GetDisplayBrightness'); }
 
-    getAvailableODMProfiles()           { return this._call('ODMProfilesAvailable') ?? []; }
-    getWaterCoolerSupported()           { return this._call('GetWaterCoolerSupported') ?? false; }
-    isWaterCoolerEnabled()              { return this._call('IsWaterCoolerEnabled') ?? false; }
-    isDeviceSupported()                 { return this._call('IsDeviceSupported') ?? false; }
-    getKeyboardBacklightControlEnabled(){ return this._call('GetKeyboardBacklightControlEnabled') ?? false; }
-    getSystemInfoJSON()                 { return this._call('GetSystemInfoJSON'); }
+    async getAvailableODMProfiles()           { return await this._call('ODMProfilesAvailable') ?? []; }
+    async getWaterCoolerSupported()           { return await this._call('GetWaterCoolerSupported'); }
+    async isWaterCoolerEnabled()              { return await this._call('IsWaterCoolerEnabled'); }
+    async isDeviceSupported()                 { return await this._call('IsDeviceSupported'); }
+    async getKeyboardBacklightControlEnabled(){ return await this._call('GetKeyboardBacklightControlEnabled') ?? false; }
+    async getSystemInfoJSON()                 { return await this._call('GetSystemInfoJSON'); }
 
-    getFanProfile(name) { return this._call('GetFanProfile', [name], 's'); }
+    async getFanProfile(name) { return await this._call('GetFanProfile', [name], 's'); }
 
     // Setters
 
-    setActiveProfile(id) {
-        return this._callVoid('SetActiveProfile', [id], 's');
+    async setActiveProfile(id) {
+        return await this._callVoid('SetActiveProfile', [id], 's');
     }
 
-    applyFanProfiles(json) {
-        return this._callVoid('ApplyFanProfiles', [json], 's');
+    async applyFanProfiles(json) {
+        return await this._callVoid('ApplyFanProfiles', [json], 's');
     }
 
-    setKeyboardBacklight(json) {
-        return this._callVoid('SetKeyboardBacklightStatesJSON', [json], 's');
+    async setKeyboardBacklight(json) {
+        return await this._callVoid('SetKeyboardBacklightStatesJSON', [json], 's');
     }
 
-    setWebcamEnabled(v) {
+    async setWebcamEnabled(v) {
         // Try both method names for compatibility
-        return this._callVoid('SetWebcam', [v], 'b');
+        return await this._callVoid('SetWebcam', [v], 'b');
     }
 
-    setFnLock(v) {
-        return this._callVoid('SetFnLockStatus', [v], 'b');
+    async setFnLock(v) {
+        return await this._callVoid('SetFnLockStatus', [v], 'b');
     }
 
-    setDisplayBrightness(v) {
-        return this._callVoid('SetDisplayBrightness', [v], 'i');
+    async setDisplayBrightness(v) {
+        return await this._callVoid('SetDisplayBrightness', [v], 'i');
     }
 
-    enableWaterCooler(v) {
-        return this._callVoid('EnableWaterCooler', [v], 'b');
+    async enableWaterCooler(v) {
+        return await this._callVoid('EnableWaterCooler', [v], 'b');
     }
 
-    setWaterCoolerFanSpeed(percent) {
-        return this._callVoid('SetWaterCoolerFanSpeed', [percent], 'i');
+    async setWaterCoolerFanSpeed(percent) {
+        return await this._callVoid('SetWaterCoolerFanSpeed', [percent], 'i');
     }
 
-    setWaterCoolerPumpVoltage(code) {
-        return this._callVoid('SetWaterCoolerPumpVoltage', [code], 'i');
+    async setWaterCoolerPumpVoltage(code) {
+        return await this._callVoid('SetWaterCoolerPumpVoltage', [code], 'i');
     }
 
-    setWaterCoolerLEDColor(r, g, b, mode) {
-        return this._callVoid('SetWaterCoolerLEDColor', [r, g, b, mode], 'iiii');
+    async setWaterCoolerLEDColor(r, g, b, mode) {
+        return await this._callVoid('SetWaterCoolerLEDColor', [r, g, b, mode], 'iiii');
     }
 
-    turnOffWaterCoolerLED() {
-        return this._callVoid('TurnOffWaterCoolerLED');
+    async turnOffWaterCoolerLED() {
+        return await this._callVoid('TurnOffWaterCoolerLED');
     }
 
     // Cleanup
 
     destroy() {
+        this._generation++;
+        this._cancellable.cancel();
         if (this._watchId) {
             Gio.bus_unwatch_name(this._watchId);
             this._watchId = 0;

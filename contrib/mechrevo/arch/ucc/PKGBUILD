@@ -1,0 +1,33 @@
+# Build the current checkout, including its Mechrevo changes.
+pkgname=uniwill-control-center-mechrevo
+pkgver=0.2.0.r20260920
+pkgrel=9
+pkgdesc='Uniwill Control Center for Mechrevo YAOSHI X6AR55xY with Qt6 and GNOME integration'
+arch=('x86_64')
+url='https://github.com/noteMASTER11/ucc'
+license=('GPL-3.0-or-later')
+depends=('qt6-base' 'qt6-charts' 'qt6-connectivity' 'qt6-declarative' 'systemd-libs' 'dbus' 'polkit' 'hicolor-icon-theme' 'tuxedo-drivers')
+makedepends=('cmake' 'ninja' 'git' 'nlohmann-json' 'python' 'gjs' 'nodejs')
+provides=('uniwill-control-center=0.2.0')
+conflicts=('uniwill-control-center')
+# Settings are created/imported locally, not shipped as package-owned files.
+options=('!debug')
+
+build() {
+  cmake -S "$startdir/../../../.." -B "$srcdir/build" -G Ninja \
+    -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=/usr -DCMAKE_INSTALL_LIBDIR=lib \
+    -DBUILD_TRAY=OFF -DBUILD_GNOME=ON -DBUILD_TESTS=ON
+  cmake --build "$srcdir/build" -j2
+}
+
+check() {
+  ctest --test-dir "$srcdir/build" --output-on-failure
+  python "$startdir/../../tests/test_migration.py"
+}
+
+package() {
+  DESTDIR="$pkgdir" cmake --install "$srcdir/build"
+  install -dm755 "$pkgdir/etc/ucc"
+  install -Dm644 "$startdir/uccd-sleep.service" "$pkgdir/usr/lib/systemd/system/uccd-sleep.service"
+  rm "$pkgdir/usr/lib/systemd/system/uccd-pre-sleep.service"
+}

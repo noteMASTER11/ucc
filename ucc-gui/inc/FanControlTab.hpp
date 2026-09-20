@@ -124,6 +124,7 @@ private:
   void connectSignals();
   void updateColorButtonState();
   void updateManualControlState();
+  void pollWaterCoolerStatus();
 
   UccdClient *m_uccdClient;
   ProfileManager *m_profileManager;
@@ -159,7 +160,7 @@ private:
   int m_currentBlue = 0;
 
   bool m_autoControl = true;
-  bool m_manualControlInitialized = false;
+  bool m_waterCoolerReadPending = false;
   bool m_waterCoolerSupported = false;
 };
 

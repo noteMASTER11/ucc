@@ -3737,6 +3737,14 @@ std::optional< UniwillDeviceID > UccDBusService::identifyDevice()
                                     .read().value_or( "" );
   const std::string boardName = SysfsNode< std::string >( dmiBasePath + "/board_name" ).read().value_or( "" );
 
+  // Same sealed four-field alias as the locally patched TCC and kernel driver.
+  // SKU 0001 alone is not a model identifier.
+  const auto sysVendor = SysfsNode< std::string >( dmiBasePath + "/sys_vendor" ).read().value_or( "" );
+  const auto boardVersion = SysfsNode< std::string >( dmiBasePath + "/board_version" ).read().value_or( "" );
+  if ( sysVendor == "MECHREVO" && boardName == "YAOSHI Series-X6AR55xY" &&
+       boardVersion == "Standard" && productSKU == "0001" )
+    return UniwillDeviceID::STELLARIS16I07;
+
   // get module info from tuxedo_io
   std::string deviceModelId;
   m_io.deviceModelIdStr( deviceModelId );

@@ -20,6 +20,7 @@
 #include <QBluetoothLocalDevice>
 #include <QProcess>
 #include <QThread>
+#include <algorithm>
 #include <iostream>
 #include <syslog.h>
 
@@ -47,6 +48,11 @@ const QBluetoothUuid LCTWaterCoolerWorker::NORDIC_UART_SERVICE_UUID_OBJ = QBluet
 const QBluetoothUuid LCTWaterCoolerWorker::NORDIC_UART_CHAR_TX_OBJ = QBluetoothUuid( NORDIC_UART_CHAR_TX );
 const QBluetoothUuid LCTWaterCoolerWorker::NORDIC_UART_CHAR_RX_OBJ = QBluetoothUuid( NORDIC_UART_CHAR_RX );
 
+#include "AquarisSelection.hpp"
+#include <QFile>
+#include <QJsonDocument>
+#include <QJsonObject>
+
 // Construction / Destruction
 
 LCTWaterCoolerWorker::LCTWaterCoolerWorker( UccDBusData& dbusData, StatusCallback statusCallback, QObject* parent )
@@ -55,24 +61,48 @@ LCTWaterCoolerWorker::LCTWaterCoolerWorker( UccDBusData& dbusData, StatusCallbac
 {
   std::cout << "[LCTWaterCoolerWorker] Constructed worker" << std::endl;
 
+  // Imported once from the user's TCC Save state. An invalid file fails closed.
+  QFile migrationFile(QStringLiteral("/etc/ucc/aquaris.json"));
+  m_hasMigrationConfig = migrationFile.exists();
+  if (migrationFile.open(QIODevice::ReadOnly)) {
+    const auto saved = QJsonDocument::fromJson(migrationFile.readAll()).object();
+    m_savedDeviceAddress = saved.value("address").toString().toUpper();
+    m_savedDeviceName = saved.value("name").toString();
+    m_lastLedR.store(saved.value("red").toInt(-1));
+    m_lastLedG.store(saved.value("green").toInt(-1));
+    m_lastLedB.store(saved.value("blue").toInt(-1));
+    m_lastLedMode.store(saved.value("ledMode").toInt(-1));
+  }
+
   // Timer for periodic tick - fires on the main thread event loop
   m_tickTimer = new QTimer( this );
   m_tickTimer->setInterval( TICK_INTERVAL_MS );
   connect( m_tickTimer, &QTimer::timeout, this, &LCTWaterCoolerWorker::onTick );
 
-  // Initialize BLE discovery agent
+  // The adapter may appear after the daemon starts; discovery retries initialize it.
+  ensureDiscoveryAgent();
+
+  // Register even when Bluetooth is not ready yet.
+  setupSuspendResumeHandling();
+}
+
+bool LCTWaterCoolerWorker::ensureDiscoveryAgent()
+{
+  if ( m_deviceDiscoveryAgent )
+    return true;
+
   auto adapters = QBluetoothLocalDevice::allDevices();
   if ( adapters.isEmpty() )
   {
-    syslog( LOG_ERR, "LCTWaterCoolerWorker: no Bluetooth adapters found" );
-    return;
+    syslog( LOG_INFO, "LCTWaterCoolerWorker: waiting for a Bluetooth adapter" );
+    return false;
   }
 
   m_deviceDiscoveryAgent = new QBluetoothDeviceDiscoveryAgent( this );
   if ( not m_deviceDiscoveryAgent )
   {
     syslog( LOG_ERR, "LCTWaterCoolerWorker: failed to create discovery agent" );
-    return;
+    return false;
   }
 
   syslog( LOG_INFO, "LCTWaterCoolerWorker: found %d Bluetooth adapter(s)", static_cast< int >( adapters.size() ) );
@@ -85,11 +115,15 @@ LCTWaterCoolerWorker::LCTWaterCoolerWorker( UccDBusData& dbusData, StatusCallbac
   connect( m_deviceDiscoveryAgent, &QBluetoothDeviceDiscoveryAgent::finished, this,
            &LCTWaterCoolerWorker::onDiscoveryFinished );
   connect( m_deviceDiscoveryAgent, &QBluetoothDeviceDiscoveryAgent::errorOccurred, this,
-           []( QBluetoothDeviceDiscoveryAgent::Error error )
-           { syslog( LOG_ERR, "LCTWaterCoolerWorker: discovery error %d", static_cast< int >( error ) ); } );
+           [this]( QBluetoothDeviceDiscoveryAgent::Error error )
+           {
+             syslog( LOG_ERR, "LCTWaterCoolerWorker: discovery error %d", static_cast< int >( error ) );
+             m_isDiscovering = false;
+             setAvailableFlag(false);
+             recordConnectionFailure();
+           } );
 
-  // Listen for system suspend/resume to cleanly tear down and reinitialize BLE
-  setupSuspendResumeHandling();
+  return true;
 }
 
 LCTWaterCoolerWorker::~LCTWaterCoolerWorker()
@@ -183,6 +217,25 @@ void LCTWaterCoolerWorker::onTick()
 
 // State handlers (all direct calls - same thread, no dispatch)
 
+void LCTWaterCoolerWorker::recordConnectionFailure()
+{
+  const auto previous = m_state.load();
+  if (previous == WaterCoolerState::Error) return;
+  m_isConnected = false;
+  m_dbusData.waterCoolerConnected = false;
+  m_lastPumpVoltage.store(-1);
+  m_lastFanSpeed.store(-1);
+  if (m_suspending || !m_dbusData.waterCoolerScanningEnabled) {
+    m_state = WaterCoolerState::Disconnected;
+    return;
+  }
+  if (previous == WaterCoolerState::Reconnecting)
+    m_fastReconnectFailures = std::min(m_fastReconnectFailures + 1, FAST_RECONNECT_MAX_FAILURES);
+  m_consecutiveFailures = std::min(m_consecutiveFailures + 1, 6);
+  m_state = WaterCoolerState::Error;
+  m_lastDiscoveryStart = std::chrono::steady_clock::now();
+}
+
 void LCTWaterCoolerWorker::handleDisconnected()
 {
   setAvailableFlag( false );
@@ -208,10 +261,8 @@ void LCTWaterCoolerWorker::handleDisconnected()
 
       if ( not connectToKnownDevice() )
       {
-        syslog( LOG_WARNING, "LCTWaterCoolerWorker: fast reconnect failed, falling back to discovery" );
-        ++m_consecutiveFailures;
-        ++m_fastReconnectFailures;
-        requestStartDiscovery();
+        syslog( LOG_WARNING, "LCTWaterCoolerWorker: fast reconnect failed, waiting before retry" );
+        recordConnectionFailure();
       }
       return;
     }
@@ -273,16 +324,8 @@ void LCTWaterCoolerWorker::handleReconnecting()
 
   if ( secondsSinceLastDiscovery() > FAST_RECONNECT_TIMEOUT_SECONDS )
   {
-    syslog( LOG_WARNING, "LCTWaterCoolerWorker: fast reconnect timed out, falling back to discovery" );
-    ++m_consecutiveFailures;
-    ++m_fastReconnectFailures;
-
-    // Cleanup the failed attempt so we start fresh
-    cleanupBleController();
-
-    m_state = WaterCoolerState::Disconnected;
-    // Force immediate discovery on next cycle
-    m_lastDiscoveryStart = std::chrono::steady_clock::time_point{};
+    syslog( LOG_WARNING, "LCTWaterCoolerWorker: fast reconnect timed out, waiting before retry" );
+    recordConnectionFailure();
   }
 }
 
@@ -298,8 +341,7 @@ void LCTWaterCoolerWorker::handleConnecting()
   if ( secondsSinceLastDiscovery() > CONNECTION_TIMEOUT_SECONDS )
   {
     syslog( LOG_WARNING, "LCTWaterCoolerWorker: connection timeout" );
-    ++m_consecutiveFailures;
-    m_state = WaterCoolerState::Disconnected;
+    recordConnectionFailure();
   }
 }
 
@@ -310,8 +352,7 @@ void LCTWaterCoolerWorker::handleConnected()
   if ( not m_isConnected.load() )
   {
     syslog( LOG_WARNING, "LCTWaterCoolerWorker: lost connection to water cooler" );
-    ++m_consecutiveFailures;
-    m_state = WaterCoolerState::Disconnected;
+    recordConnectionFailure();
     return;
   }
 
@@ -327,45 +368,17 @@ void LCTWaterCoolerWorker::handleConnected()
 
 void LCTWaterCoolerWorker::handleError()
 {
-  // Exponential backoff: 5, 10, 20, 40, 80, capped at 120 seconds
-  const int backoffSeconds =
-      std::min( ERROR_RETRY_BASE_SECONDS * ( 1 << std::min( m_consecutiveFailures, 5 ) ), ERROR_RETRY_MAX_SECONDS );
-
-  if ( secondsSinceLastDiscovery() > backoffSeconds )
-  {
-    ++m_consecutiveFailures;
-
-    // After a few failures, purge the BlueZ GATT cache for this device
-    // to eliminate stale handle mappings that can cause silent write failures.
-    if ( m_consecutiveFailures == GATT_CACHE_PURGE_FAILURE_THRESHOLD && m_hasKnownDevice )
-    {
-      const QString mac = m_lastKnownDeviceInfo.address().toString();
-      syslog( LOG_WARNING, "LCTWaterCoolerWorker: %d consecutive failures, purging BlueZ cache for %s",
-              m_consecutiveFailures, mac.toStdString().c_str() );
-      purgeBlueZDeviceCache( mac );
-    }
-
-    // After persistent failures, intervene at the system level
-    if ( m_consecutiveFailures >= ADAPTER_RESET_FAILURE_THRESHOLD )
-    {
-      syslog( LOG_WARNING, "LCTWaterCoolerWorker: %d consecutive failures, resetting BT adapter",
-              m_consecutiveFailures );
-
-      if ( resetBluetoothAdapter() )
-      {
-        syslog( LOG_INFO, "LCTWaterCoolerWorker: adapter reset succeeded, retrying" );
-        m_consecutiveFailures = 0;
-      }
-      else
-      {
-        syslog( LOG_ERR, "LCTWaterCoolerWorker: adapter reset failed" );
-      }
-    }
-
-    syslog( LOG_INFO, "LCTWaterCoolerWorker: retrying after error (backoff was %d s, failures: %d)", backoffSeconds,
-            m_consecutiveFailures );
+  // Tear down outside Bluetooth signal callbacks. Every failed attempt waits
+  // 5, 10, 20, 40, 80, then at most 120 seconds before trying again.
+  cleanupBleController();
+  const int exponent = std::clamp(m_consecutiveFailures - 1, 0, 5);
+  const int backoffSeconds = std::min(ERROR_RETRY_BASE_SECONDS * (1 << exponent),
+                                      ERROR_RETRY_MAX_SECONDS);
+  if (secondsSinceLastDiscovery() >= backoffSeconds) {
+    syslog(LOG_INFO, "LCTWaterCoolerWorker: retrying after %d s (failures: %d)",
+           backoffSeconds, m_consecutiveFailures);
     m_state = WaterCoolerState::Disconnected;
-    m_lastDiscoveryStart = std::chrono::steady_clock::now();
+    m_lastDiscoveryStart = std::chrono::steady_clock::time_point{};
   }
 }
 
@@ -373,6 +386,9 @@ void LCTWaterCoolerWorker::handleError()
 
 void LCTWaterCoolerWorker::onConnectionReady()
 {
+  if (m_state != WaterCoolerState::Connecting && m_state != WaterCoolerState::Reconnecting)
+    return;
+
   syslog( LOG_INFO, "LCTWaterCoolerWorker: connection ready" );
 
   if ( m_state == WaterCoolerState::Connecting or m_state == WaterCoolerState::Reconnecting )
@@ -431,13 +447,36 @@ void LCTWaterCoolerWorker::onDeviceDiscovered( const QBluetoothDeviceInfo& devic
           info.uuid.toStdString().c_str(), info.rssi );
 
   // Stop discovery once we find the first LCT device so the state machine can proceed
-  std::cout << "[WC-BLE] Scan stopped early - found target device" << std::endl;
-  stopDiscoveryInternal();
+  if (!m_hasMigrationConfig)
+  {
+    std::cout << "[WC-BLE] Scan stopped early - found target device" << std::endl;
+    stopDiscoveryInternal();
+  }
 }
 
 void LCTWaterCoolerWorker::onDiscoveryFinished()
 {
   m_isDiscovering = false;
+  if (m_hasMigrationConfig) {
+    // Deduplicate advertisements before deciding whether a rotated address is unique.
+    QList<DeviceInfo> unique;
+    std::vector<AquarisCandidate> candidates;
+    for (const auto& device : m_discoveredDevices) {
+      bool seen = false;
+      for (const auto& previous : unique) if (previous.uuid == device.uuid) seen = true;
+      if (!seen) {
+        unique.append(device);
+        candidates.push_back({device.uuid.toUpper().toStdString(), device.name.toStdString()});
+      }
+    }
+    const int chosen = selectAquaris(candidates, m_savedDeviceAddress.toStdString(),
+                                    m_savedDeviceName.toStdString());
+    m_discoveredDevices.clear();
+    if (chosen >= 0) {
+      m_discoveredDevices.append(unique[chosen]);
+      m_trustedDeviceMacAddress = unique[chosen].uuid;
+    }
+  }
   std::cout << "[WC-BLE] Scan ended, " << m_discoveredDevices.size() << " LCT device(s) found" << std::endl;
   syslog( LOG_INFO, "LCTWaterCoolerWorker: discovery finished, %d LCT device(s) found",
           static_cast< int >( m_discoveredDevices.size() ) );
@@ -445,6 +484,9 @@ void LCTWaterCoolerWorker::onDiscoveryFinished()
 
 void LCTWaterCoolerWorker::onBleConnected()
 {
+  if (m_state != WaterCoolerState::Connecting && m_state != WaterCoolerState::Reconnecting)
+    return;
+
   syslog( LOG_INFO, "LCTWaterCoolerWorker: BLE connected, starting service discovery" );
   m_bleController->discoverServices();
   // NOTE: m_isConnected is set later in onServiceStateChanged() once UART is ready
@@ -467,7 +509,7 @@ void LCTWaterCoolerWorker::onBleDisconnected()
   if ( currentState == WaterCoolerState::Connected or currentState == WaterCoolerState::Connecting or
       currentState == WaterCoolerState::Reconnecting )
   {
-    m_state = WaterCoolerState::Disconnected;
+    recordConnectionFailure();
   }
 }
 
@@ -511,6 +553,9 @@ void LCTWaterCoolerWorker::onServiceDiscoveryFinished()
 
 void LCTWaterCoolerWorker::onServiceStateChanged( QLowEnergyService::ServiceState state )
 {
+  if (m_state != WaterCoolerState::Connecting && m_state != WaterCoolerState::Reconnecting)
+    return;
+
   if ( state != QLowEnergyService::RemoteServiceDiscovered )
     return;
 
@@ -584,8 +629,7 @@ void LCTWaterCoolerWorker::onBleError( QLowEnergyController::Error error )
   if ( currentState == WaterCoolerState::Connecting or currentState == WaterCoolerState::Reconnecting or
       currentState == WaterCoolerState::Connected )
   {
-    ++m_consecutiveFailures;
-    m_state = WaterCoolerState::Disconnected;
+    recordConnectionFailure();
   }
 }
 
@@ -864,7 +908,7 @@ bool LCTWaterCoolerWorker::writeCommandImpl( const QByteArray& data, bool withRe
 
 bool LCTWaterCoolerWorker::startDiscoveryInternal()
 {
-  if ( not m_deviceDiscoveryAgent )
+  if ( not ensureDiscoveryAgent() )
     return false;
 
   // Guard against stale m_isDiscovering flag: also check the agent's actual state.
@@ -1271,8 +1315,7 @@ void LCTWaterCoolerWorker::sendKeepaliveProbe()
     syslog( LOG_WARNING, "LCTWaterCoolerWorker: %d missed keepalives, forcing disconnect", m_missedKeepalives );
     m_isConnected = false;
     m_missedKeepalives = 0;
-    ++m_consecutiveFailures;
-    m_state = WaterCoolerState::Disconnected;
+    recordConnectionFailure();
   }
 }
 
@@ -1290,7 +1333,7 @@ void LCTWaterCoolerWorker::requestStartDiscovery()
   if ( not startDiscoveryInternal() )
   {
     syslog( LOG_ERR, "LCTWaterCoolerWorker: failed to start discovery" );
-    m_state = WaterCoolerState::Error;
+    recordConnectionFailure();
   }
 }
 
@@ -1302,7 +1345,7 @@ void LCTWaterCoolerWorker::requestConnectToDevice( const QString& uuid )
   if ( not connectToDevice( uuid ) )
   {
     syslog( LOG_ERR, "LCTWaterCoolerWorker: failed to initiate connection" );
-    m_state = WaterCoolerState::Error;
+    recordConnectionFailure();
   }
 }
 

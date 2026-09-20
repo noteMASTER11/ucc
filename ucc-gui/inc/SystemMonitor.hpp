@@ -19,6 +19,7 @@
 #include <QString>
 #include <QStringList>
 #include <QTimer>
+#include <QElapsedTimer>
 #include <memory>
 #include "UccdClient.hpp"
 
@@ -122,6 +123,7 @@ public slots:
   void setChargeType( const QString &type );
 
 signals:
+  void metricsUpdated();
   void cpuUsageChanged();
   void cpuTempChanged();
   void cpuFrequencyChanged();
@@ -165,6 +167,9 @@ private:
 
   std::unique_ptr< UccdClient > m_client;
   QTimer *m_updateTimer;
+  QElapsedTimer m_controlsAge;
+  bool m_metricsPending = false;
+  unsigned m_monitorGeneration = 0;
 
   QString m_cpuUsage = "0%";
   QString m_cpuTemp = "0°C";

@@ -58,6 +58,14 @@ namespace ucc
     explicit MainWindow( QWidget *parent = nullptr );
     ~MainWindow() override;
 
+  protected:
+    void showEvent(QShowEvent *event) override;
+    void hideEvent(QHideEvent *event) override;
+    void changeEvent(QEvent *event) override;
+
+  private:
+    void updateMonitoringActivity();
+
   private slots:
     // Status bar slots
     void updateConnectionStatusLabel();

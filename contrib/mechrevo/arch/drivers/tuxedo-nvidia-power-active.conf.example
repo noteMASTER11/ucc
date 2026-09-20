@@ -1,0 +1,3 @@
+# Install as /etc/modprobe.d/tuxedo-nvidia-power-active.conf only after
+# verifying the exact DMI, GPU subsystem, vBIOS, AC adapter and thermal gates.
+options tuxedo_nb02_nvidia_power_ctrl active_mode=1

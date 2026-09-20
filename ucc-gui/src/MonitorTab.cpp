@@ -14,6 +14,7 @@
  */
 
 #include "MonitorTab.hpp"
+#include "AsyncRead.hpp"
 #include "../libucc-dbus/UccdClient.hpp"
 #include <QDateTime>
 #include <QLabel>
@@ -221,12 +222,15 @@ MonitorTab::MonitorTab( UccdClient *client, QWidget *parent )
 
   setFocusPolicy( Qt::StrongFocus );  // Enable keyboard events for spacebar pause
 
-  m_fetchTimer.setInterval( 1000 );
+  m_fetchTimer.setInterval( 2000 );
   connect( &m_fetchTimer, &QTimer::timeout, this, &MonitorTab::fetchData );
 }
 
 void MonitorTab::setMonitoringActive( bool active )
 {
+  if (m_monitoringActive == active) return;
+  m_monitoringActive = active;
+  ++m_fetchGeneration;
   if ( active )
   {
     // Clear all in-memory buffers and series to avoid overlapping time ranges
@@ -385,6 +389,7 @@ void MonitorTab::setupControls()
 void MonitorTab::setTimeWindow( int seconds )
 {
   m_windowSeconds = std::clamp( seconds, 60, 1800 );
+  ++m_fetchGeneration;
 
   // Update the main window status bar
   if ( auto *mw = qobject_cast< QMainWindow * >( window() ) )
@@ -1671,38 +1676,40 @@ void MonitorTab::setupVoltageChart()
 
 void MonitorTab::fetchData()
 {
-  if ( !m_client || m_paused )
-    return;
+  if (!m_client || m_paused || !m_monitoringActive || m_fetchPending) return;
+  m_fetchPending = true;
+  const auto generation = m_fetchGeneration;
+  readUccdAsync(this, "GetMonitorDataSince", {QVariant::fromValue<qlonglong>(m_lastTimestamp)},
+    [this, generation](std::optional<QVariant> result) {
+      m_fetchPending = false;
+      if (!m_monitoringActive || m_paused || generation != m_fetchGeneration ||
+          !result || result->toByteArray().isEmpty()) return;
+      // Suspend painting on ALL chart views during the batch update
+      m_tempChartView->setUpdatesEnabled( false );
+      m_dutyChartView->setUpdatesEnabled( false );
+      m_powerChartView->setUpdatesEnabled( false );
+      m_freqChartView->setUpdatesEnabled( false );
+      m_voltChartView->setUpdatesEnabled( false );
+      m_unifiedChartView->setUpdatesEnabled( false );
 
-  auto result = m_client->getMonitorDataSince( m_lastTimestamp );
-  if ( !result.has_value() || result->isEmpty() )
-    return;
+      applyBinaryData(result->toByteArray());
+      trimSeries();
+      commitSeries();
+      updateAxes();
+      updateStickyMarkPositions();
 
-  // Suspend painting on ALL chart views during the batch update
-  m_tempChartView->setUpdatesEnabled( false );
-  m_dutyChartView->setUpdatesEnabled( false );
-  m_powerChartView->setUpdatesEnabled( false );
-  m_freqChartView->setUpdatesEnabled( false );
-  m_voltChartView->setUpdatesEnabled( false );
-  m_unifiedChartView->setUpdatesEnabled( false );
+      // Resume painting - triggers a single composite repaint
+      m_tempChartView->setUpdatesEnabled( true );
+      m_dutyChartView->setUpdatesEnabled( true );
+      m_powerChartView->setUpdatesEnabled( true );
+      m_freqChartView->setUpdatesEnabled( true );
+      m_voltChartView->setUpdatesEnabled( true );
+      m_unifiedChartView->setUpdatesEnabled( true );
 
-  applyBinaryData( *result );
-  trimSeries();
-  commitSeries();
-  updateAxes();
-  updateStickyMarkPositions();
-
-  // Resume painting - triggers a single composite repaint
-  m_tempChartView->setUpdatesEnabled( true );
-  m_dutyChartView->setUpdatesEnabled( true );
-  m_powerChartView->setUpdatesEnabled( true );
-  m_freqChartView->setUpdatesEnabled( true );
-  m_voltChartView->setUpdatesEnabled( true );
-  m_unifiedChartView->setUpdatesEnabled( true );
-
-  // Refresh floating crosshair labels so they don't lag behind the scrolling data
-  if ( m_cursorInPlot )
-    updateCrosshair( m_lastCrosshairPos, m_annotationsVisible );
+      // Refresh floating crosshair labels so they don't lag behind the scrolling data
+      if ( m_cursorInPlot )
+        updateCrosshair( m_lastCrosshairPos, m_annotationsVisible );
+    });
 }
 
 // Pause / resume via spacebar
@@ -1744,7 +1751,7 @@ void MonitorTab::applyBinaryData( const QByteArray &data )
 
   while ( p < end )
   {
-    if ( p + 1 + sizeof( uint32_t ) > end )
+    if ( static_cast<size_t>(end - p) < 1 + sizeof(uint32_t) )
       break;
 
     const uint8_t metricId = *p++;
@@ -1753,7 +1760,7 @@ void MonitorTab::applyBinaryData( const QByteArray &data )
     std::memcpy( &count, p, sizeof( count ) );
     p += sizeof( count );
 
-    if ( p + static_cast< size_t >( count ) * kPointSize > end )
+    if ( count > static_cast<size_t>(end - p) / kPointSize )
       break;
 
     const bool valid = ( metricId < METRIC_COUNT )

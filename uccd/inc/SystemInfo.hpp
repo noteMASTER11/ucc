@@ -28,6 +28,7 @@ enum class LaptopManufacturer
   XMG,
   PCSpecialist,
   Uniwill,       // generic Uniwill (not rebranded or unknown brand)
+  MECHREVO,
   Unknown
 };
 

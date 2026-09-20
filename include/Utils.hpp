@@ -62,6 +62,12 @@ inline bool isDeviceSupported()
   if ( !sku.has_value() )
     return false;
 
+  if (*sku == "0001" &&
+      SysfsNode<std::string>("/sys/class/dmi/id/sys_vendor").read().value_or("") == "MECHREVO" &&
+      SysfsNode<std::string>("/sys/class/dmi/id/board_name").read().value_or("") == "YAOSHI Series-X6AR55xY" &&
+      SysfsNode<std::string>("/sys/class/dmi/id/board_version").read().value_or("") == "Standard")
+    return true;
+
   return std::find( kSupportedDeviceSKUs.begin(),
                     kSupportedDeviceSKUs.end(),
                     *sku ) != kSupportedDeviceSKUs.end();

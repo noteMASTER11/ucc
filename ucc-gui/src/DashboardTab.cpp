@@ -29,6 +29,7 @@
 #include <QPalette>
 #include <QColor>
 #include "CommonTypes.hpp"
+#include "AsyncRead.hpp"
 
 namespace
 {
@@ -93,10 +94,9 @@ DashboardTab::DashboardTab( SystemMonitor *systemMonitor, ProfileManager *profil
   // Initialize water cooler status polling only if supported
   if ( m_waterCoolerSupported )
   {
-    m_waterCoolerDbus = new QDBusInterface(QStringLiteral("com.uniwill.uccd"), QStringLiteral("/com/uniwill/uccd"), QStringLiteral("com.uniwill.uccd"), QDBusConnection::systemBus(), this);
     m_waterCoolerPollTimer = new QTimer(this);
     connect(m_waterCoolerPollTimer, &QTimer::timeout, this, &DashboardTab::updateWaterCoolerStatus);
-    m_waterCoolerPollTimer->start(1000);
+    m_waterCoolerPollTimer->start(2000);
     updateWaterCoolerStatus();
   }
 }
@@ -425,7 +425,6 @@ void DashboardTab::connectSignals()
              m_activeProfileLabel->setText( m_profileManager->activeProfileName() );
            } );
 
-  Q_UNUSED(m_waterCoolerDbus)
 
   // Water cooler enable toggle button -> emit signal for cross-tab sync and update status
   connect( m_waterCoolerEnableCheckBox, &QPushButton::toggled,
@@ -442,65 +441,66 @@ void DashboardTab::connectSignals()
 
 void DashboardTab::updateWaterCoolerStatus()
 {
-  if ( not m_waterCoolerDbus || not m_waterCoolerHeader )
-    return;
-
-  auto setWCStatus = [ this ]( const bool connected )
-  {
-    for ( int i = 0; i < m_waterCoolerGrid->count(); ++i )
+  if (!isVisible() || window()->isMinimized() || m_waterCoolerReadPending ||
+      !m_waterCoolerSupported || !m_waterCoolerHeader) return;
+  m_waterCoolerReadPending = true;
+  readUccdBatch(this, {"GetWaterCoolerAvailable", "GetWaterCoolerConnected"}, [this](const QVariantMap &values) {
+    m_waterCoolerReadPending = false;
+    if (!isVisible() || window()->isMinimized() ||
+        !values.contains("GetWaterCoolerAvailable") || !values.contains("GetWaterCoolerConnected")) return;
+    const bool scanning = values.value("GetWaterCoolerAvailable").toBool();
+    const bool connected = values.value("GetWaterCoolerConnected").toBool();
+    auto setWCStatus = [ this ]( const bool connected )
     {
-      if ( QWidget *w = m_waterCoolerGrid->itemAt( i )->widget() )
-        w->setVisible( connected );
+      for ( int i = 0; i < m_waterCoolerGrid->count(); ++i )
+      {
+        if ( QWidget *w = m_waterCoolerGrid->itemAt( i )->widget() )
+          w->setVisible( connected );
+      }
+
+      m_waterCoolerHeader->setVisible( connected );
+    };
+
+    // Check if water cooler is enabled
+    bool wcEnabled = m_waterCoolerEnableCheckBox ? m_waterCoolerEnableCheckBox->isChecked() : false;
+
+    // Compute explicit hex colors from the current palette so styles are consistent.
+    QPalette pal = this->palette();
+    const QString textHex = pal.color(QPalette::WindowText).name();
+    const QString midHex = pal.color(QPalette::Mid).name();
+    const QString highlightHex = pal.color(QPalette::Highlight).name();
+    const QString searchingColorHex = QStringLiteral("#0066cc");  // Dark blue for searching
+
+    // Helper: emit status bar signal (dashboard label is hidden).
+    auto emitStatus = [this]( const QString &statusText, const QString &colorHex )
+    {
+      emit waterCoolerStatusChanged(
+        QString("<span style='color: %1;'>&#9679;</span> Water Cooler: %2").arg( colorHex, statusText ) );
+    };
+
+    // Status progression: Disabled -> Disconnected -> Searching -> Connected
+    if ( !wcEnabled )
+    {
+      emitStatus( QStringLiteral("Disabled"), m_ringColorHex );
+      setWCStatus( false );
     }
-
-    m_waterCoolerHeader->setVisible( connected );
-  };
-
-  // Check if water cooler is enabled
-  bool wcEnabled = m_waterCoolerEnableCheckBox ? m_waterCoolerEnableCheckBox->isChecked() : false;
-
-  // Get water cooler state from daemon
-  // Note: GetWaterCoolerAvailable returns true when scanning is active (not when a device is found)
-  // GetWaterCoolerConnected returns true only when a device is actually connected
-  QDBusReply<bool> scanning = m_waterCoolerDbus->call(QStringLiteral("GetWaterCoolerAvailable"));
-  QDBusReply<bool> connected = m_waterCoolerDbus->call(QStringLiteral("GetWaterCoolerConnected"));
-
-  // Compute explicit hex colors from the current palette so styles are consistent.
-  QPalette pal = this->palette();
-  const QString textHex = pal.color(QPalette::WindowText).name();
-  const QString midHex = pal.color(QPalette::Mid).name();
-  const QString highlightHex = pal.color(QPalette::Highlight).name();
-  const QString searchingColorHex = QStringLiteral("#0066cc");  // Dark blue for searching
-
-  // Helper: emit status bar signal (dashboard label is hidden).
-  auto emitStatus = [this]( const QString &statusText, const QString &colorHex )
-  {
-    emit waterCoolerStatusChanged(
-      QString("<span style='color: %1;'>&#9679;</span> Water Cooler: %2").arg( colorHex, statusText ) );
-  };
-
-  // Status progression: Disabled -> Disconnected -> Searching -> Connected
-  if ( !wcEnabled )
-  {
-    emitStatus( QStringLiteral("Disabled"), m_ringColorHex );
-    setWCStatus( false );
-  }
-  else if ( connected.isValid() && connected.value() )
-  {
-    emitStatus( QStringLiteral("Connected"), highlightHex );
-    setWCStatus( true );
-  }
-  else if ( scanning.isValid() && scanning.value() )
-  {
-    // GetWaterCoolerAvailable == true means the daemon is actively scanning
-    emitStatus( QStringLiteral("Searching..."), searchingColorHex );
-    setWCStatus( false );
-  }
-  else
-  {
-    emitStatus( QStringLiteral("Disconnected"), m_ringColorHex );
-    setWCStatus( false );
-  }
+    else if ( connected )
+    {
+      emitStatus( QStringLiteral("Connected"), highlightHex );
+      setWCStatus( true );
+    }
+    else if ( scanning )
+    {
+      // GetWaterCoolerAvailable == true means the daemon is actively scanning
+      emitStatus( QStringLiteral("Searching..."), searchingColorHex );
+      setWCStatus( false );
+    }
+    else
+    {
+      emitStatus( QStringLiteral("Disconnected"), m_ringColorHex );
+      setWCStatus( false );
+    }
+  });
 }
 
 void DashboardTab::refreshWaterCoolerStatus()

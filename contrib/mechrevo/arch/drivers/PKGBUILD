@@ -1,0 +1,35 @@
+# Driver source is pinned independently of UCC.
+pkgname=tuxedo-drivers-mechrevo-cachyos
+pkgver=4.23.0
+pkgrel=1
+pkgdesc='DKMS TUXEDO drivers for exact Mechrevo X6AR55xY with Linux 7.2 ITE RGB fix'
+arch=('x86_64')
+url='https://github.com/tuxedocomputers/tuxedo-drivers'
+license=('GPL-2.0-only')
+depends=('dkms')
+makedepends=('git')
+optdepends=('linux-cachyos-headers: modules for linux-cachyos' 'linux-cachyos-lts-headers: modules for linux-cachyos-lts')
+provides=("tuxedo-drivers=$pkgver")
+conflicts=('tuxedo-drivers-dkms' 'tuxedo-drivers-mechrevo-dkms')
+options=('!strip' '!debug')
+source=('tuxedo-drivers::git+https://github.com/tuxedocomputers/tuxedo-drivers.git#commit=2c6bf54075fb38a7fdbefc560734281984bf65bc'
+        'mechrevo.patch' 'dkms.conf' 'tuxedo-nvidia-power-active.conf.example')
+sha256sums=('SKIP'
+  '066ff7dc74e04f2981bf3151d64c873d88afc7486fa39200ef2898e51362127e'
+  '126095725159e65f572c269995e8240afc5bbd4840289b0c7ea2b2d6b911d3b4'
+  'a8b56acf2b8ce183d26a422882ca2d6656bc097a465371cbbacfa5df1248e14b')
+
+prepare() {
+  cd "$srcdir/tuxedo-drivers"
+  git apply "$srcdir/mechrevo.patch"
+}
+
+package() {
+  local root="$pkgdir/usr/src/tuxedo-drivers-$pkgver"
+  install -dm755 "$root"
+  cp -a "$srcdir/tuxedo-drivers/src" "$root/"
+  cp "$srcdir/tuxedo-drivers/Makefile" "$srcdir/tuxedo-drivers/Kbuild" "$root/"
+  install -m644 "$srcdir/dkms.conf" "$root/dkms.conf"
+  install -Dm644 "$srcdir/tuxedo-nvidia-power-active.conf.example" \
+    "$pkgdir/usr/share/doc/$pkgname/tuxedo-nvidia-power-active.conf.example"
+}

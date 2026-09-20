@@ -79,16 +79,8 @@ find_package( Qt6 REQUIRED COMPONENTS
   QuickControls2
 )
 
-find_package( ECM REQUIRED NO_MODULE )
-set( CMAKE_MODULE_PATH ${ECM_MODULE_PATH} )# GNUInstallDirs must come before KDEInstallDirs to avoid variable propagation
 include( GNUInstallDirs )
-include( KDEInstallDirs )
-include( KDECMakeSettings )
-include( ECMQmlModule )
-
-find_package( KF6Config REQUIRED )
-find_package( KF6CoreAddons REQUIRED )
-find_package( Plasma REQUIRED )
+set( CMAKE_AUTOMOC ON )
 
 # Options
 option( BUILD_GUI "Build the main GUI application" ON )
@@ -96,6 +88,17 @@ option( BUILD_CLI "Build the command-line interface" ON )
 option( BUILD_TRAY "Build the system tray applet" ON )
 option( BUILD_GNOME "Install the GNOME Shell extension" ON )
 option( BUILD_TESTS "Build the unit test suite" OFF )
+
+if( BUILD_TRAY )
+  find_package( ECM REQUIRED NO_MODULE )
+  set( CMAKE_MODULE_PATH ${ECM_MODULE_PATH} )
+  include( KDEInstallDirs )
+  include( KDECMakeSettings )
+  include( ECMQmlModule )
+  find_package( KF6Config REQUIRED )
+  find_package( KF6CoreAddons REQUIRED )
+  find_package( Plasma REQUIRED )
+endif()
 
 # Conditionally find Qt6::Test if tests are enabled
 if( BUILD_TESTS )

@@ -3,11 +3,15 @@ Description=Uniwill Control Center Daemon
 Documentation=man:uccd(8)
 After=dbus.service
 Requires=dbus.service
+Conflicts=tccd.service
+Before=tccd.service
 
 [Service]
 Type=dbus
 BusName=com.uniwill.uccd
 ExecStart=/usr/bin/uccd --start
+# Restore firmware cooling even after a crash or forced termination.
+ExecStopPost=/usr/lib/ucc/ucc-hardware --fan-auto
 Restart=on-failure
 RestartSec=5s
 TimeoutStopSec=10s
@@ -21,8 +25,10 @@ PrivateTmp=yes
 ProtectSystem=strict
 ProtectHome=yes
 NoNewPrivileges=true
-ReadWritePaths=/etc/ucc /run
-ProtectKernelTunables=yes
+ReadWritePaths=/etc/ucc /run /sys/devices
+# Hardware controls use writable device sysfs (CPU, LEDs and charging).
+ProtectKernelTunables=no
+ReadOnlyPaths=/proc/sys /proc/sysrq-trigger /sys/firmware
 ProtectKernelModules=yes
 ProtectControlGroups=yes
 RestrictNamespaces=yes
